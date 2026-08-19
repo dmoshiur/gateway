@@ -51,6 +51,13 @@
         Open Dashboard →
       </button>
     </form>
+    {% if demo_hint %}
+    <div class="mt-5 rounded-xl border border-cyan-400/25 bg-cyan-400/5 px-4 py-3 text-[11px] text-slate-400">
+      <p class="text-cyan-300 font-semibold mb-1">🧪 Demo merchant (seeded by --init-demo)</p>
+      <p>Email: <span class="font-mono text-slate-200 select-all">demo@merchant.test</span></p>
+      <p>Password: <span class="font-mono text-slate-200 select-all">demo12345</span></p>
+    </div>
+    {% endif %}
     <p class="text-center text-xs text-slate-500 mt-5">New merchant?
       <a href="/register" class="text-[#22ffe0] hover:underline">Create an account</a></p>
   </div>
