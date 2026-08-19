@@ -1,0 +1,8 @@
+# Backend — Flask (Werkzeug is included for password hashing)
+Flask==3.0.3
+
+# Optional: switch DATABASE to PostgreSQL (see backend/db.py notes)
+# psycopg2-binary==2.9.9
+
+# Optional: production WSGI server
+# gunicorn==22.0.0

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Login — MFS Gateway{% endblock %}
+{% block nav %}{% endblock %}
+{% block content %}
+<div style="max-width: 400px; margin: 60px auto;">
+  <div class="glass-strong pad">
+    <div class="centered" style="margin-bottom: 18px;">
+      <div class="logo" style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,var(--cyan),var(--violet),var(--magenta));display:grid;place-items:center;font-size:1.6rem;margin:0 auto 10px;box-shadow:0 0 24px rgba(123,92,255,.5);">⚡</div>
+      <h2 class="gradient-text" style="margin:0;">Gateway Console</h2>
+      <p class="muted small" style="margin-top:4px;">Sign in as Superadmin or Merchant</p>
+    </div>
+
+    {% if error %}
+      <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('login', next=next) if next else url_for('login') }}">
+      <div class="field">
+        <label>Username / Email</label>
+        <input name="username" placeholder="admin or merchant@demo.com" autofocus required>
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input name="password" type="password" placeholder="••••••••" required>
+      </div>
+      <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+    </form>
+
+    <div class="muted small" style="margin-top:16px; text-align:center; line-height:1.7;">
+      <div>Superadmin: <span class="mono">admin / admin123</span></div>
+      <div>Merchant: <span class="mono">merchant@demo.com / demo123</span></div>
+    </div>
+  </div>
+</div>
+{% endblock %}

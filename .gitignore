@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Runtime data (secrets / local DB — never commit)
+data/
+*.db
+*.sqlite3
+*.sqlite
+
+# Secrets
+.env
+termux/config.json
+*.secret
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

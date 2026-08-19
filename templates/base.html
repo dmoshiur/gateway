@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}MFS Gateway{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+  <div class="container">
+    <nav class="nav">
+      <a class="brand" href="/">
+        <span class="logo">⚡</span>
+        <span>MFS <span class="gradient-text">Gateway</span></span>
+      </a>
+      <div class="nav-links">
+        {% block nav %}
+        <a class="btn btn-sm" href="/checkout">Checkout</a>
+        <a class="btn btn-sm" href="/dashboard">Dashboard</a>
+        <a class="btn btn-sm" href="/admin">Admin</a>
+        {% if session.get('admin_id') or session.get('merchant_id') %}
+        <a class="btn btn-sm btn-danger" href="/logout">Logout</a>
+        {% else %}
+        <a class="btn btn-sm btn-primary" href="/login">Login</a>
+        {% endif %}
+        {% endblock %}
+      </div>
+    </nav>
+
+    {% block content %}{% endblock %}
+
+    <footer style="text-align:center; padding: 40px 0 30px; color: var(--muted-2); font-size:.8rem;">
+      MFS Payment Gateway · bKash · Nagad · Rocket · Upay · Tap
+    </footer>
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

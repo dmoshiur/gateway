@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Checkout — {{ merchant.name if merchant else 'MFS Gateway' }}{% endblock %}
+{% block content %}
+<div id="checkout-root"
+     data-token="{{ token or '' }}"
+     data-api-key="{{ api_key or '' }}"
+     data-merchant="{{ merchant.name if merchant else '' }}"></div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/checkout.js') }}"></script>
+{% endblock %}
