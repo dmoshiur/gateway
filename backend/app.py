@@ -37,7 +37,34 @@ from datetime import datetime, timedelta, timezone
 
 from flask import (Flask, abort, g, jsonify, redirect, render_template,
                    request, session, url_for)
+from flask.sessions import SecureCookieSessionInterface
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+
+class AdaptiveSessionInterface(SecureCookieSessionInterface):
+    """Session cookies that survive iframe-embedded HTTPS previews.
+
+    Over HTTPS (reverse proxy sets X-Forwarded-Proto via ProxyFix) we emit
+    SameSite=None + Secure so the cookie is accepted inside cross-site
+    iframes (e.g. hosted live previews). Over plain HTTP localhost we keep
+    the relaxed Lax/non-secure defaults so local development still works.
+    """
+
+    def _https(self) -> bool:
+        try:
+            return request.scheme == "https"
+        except RuntimeError:
+            return False
+
+    def get_cookie_samesite(self, app):  # noqa: D102
+        if self._https():
+            return "None"
+        return super().get_cookie_samesite(app)
+
+    def get_cookie_secure(self, app):  # noqa: D102
+        if self._https():
+            return True
+        return super().get_cookie_secure(app)
 
 from . import database as db
 from .database import audit, get_db, get_setting, row_to_dict, set_setting, utcnow_iso
@@ -64,6 +91,7 @@ _RATE_LOCK = threading.Lock()
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)  # type: ignore[attr-defined]
+    app.session_interface = AdaptiveSessionInterface()
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     data_dir = os.environ.get("GATEWAY_DATA_DIR", os.path.join(root, "data"))
