@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ code }} · MFS Gateway</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  .glass { background: rgba(15,18,38,.75); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.08); }
+  .grid-bg { background-image: linear-gradient(rgba(34,255,224,.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34,255,224,.06) 1px, transparent 1px); background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 80% 70% at 50% 30%, #000 30%, transparent 100%); }
+</style>
+</head>
+<body class="bg-[#05060f] text-slate-200 min-h-screen flex items-center justify-center px-4 relative overflow-hidden" style="font-family:'Space Grotesk',sans-serif">
+<div class="grid-bg absolute inset-0 pointer-events-none"></div>
+<div class="glass rounded-3xl p-10 text-center relative z-10">
+  <p class="text-6xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-[#22ffe0] to-[#e2136e]">{{ code }}</p>
+  <p class="text-slate-400 text-sm mt-3">{{ message }}</p>
+  <a href="/" class="inline-block mt-6 text-xs text-[#22ffe0] border border-[#22ffe0]/40 rounded-xl px-5 py-2.5 hover:bg-[#22ffe0]/10">← Gateway home</a>
+</div>
+</body>
+</html>

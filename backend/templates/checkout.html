@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Secure Checkout</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: {
+  fontFamily: { display: ['"Space Grotesk"', 'sans-serif'], body: ['Inter', 'sans-serif'] },
+  colors: { ink: '#05060f', panel: 'rgba(15,18,38,.72)', neon: '#22ffe0', hot: '#e2136e' }
+}}};
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  body { font-family: Inter, sans-serif; }
+  .grid-bg {
+    background-image:
+      linear-gradient(rgba(34,255,224,.055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(34,255,224,.055) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 30%, transparent 100%);
+  }
+  .glass { background: rgba(15,18,38,.72); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+           border: 1px solid rgba(255,255,255,.08); }
+  .neon-line { background: linear-gradient(90deg, transparent, #22ffe0 30%, #e2136e 70%, transparent); height: 1px; }
+  .tile { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; cursor: pointer; }
+  .tile:hover { transform: translateY(-3px); border-color: rgba(34,255,224,.55); box-shadow: 0 8px 30px -8px rgba(34,255,224,.35); }
+  .tile.active { border-color: var(--brand, #22ffe0); box-shadow: 0 0 0 1px var(--brand, #22ffe0), 0 10px 34px -10px var(--brand, #22ffe0); }
+  .tab-btn.active { color: #05060f; background: linear-gradient(120deg, #22ffe0, #7ce7ff); box-shadow: 0 4px 22px -6px rgba(34,255,224,.7); }
+  .spinner { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(34,255,224,.15);
+             border-top-color: #22ffe0; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .shake { animation: shake .45s ease; }
+  @keyframes shake { 20%{transform:translateX(-8px)} 40%{transform:translateX(7px)} 60%{transform:translateX(-5px)} 80%{transform:translateX(4px)} }
+  .check-path { stroke-dasharray: 120; stroke-dashoffset: 120; animation: draw .7s .1s ease forwards; }
+  .check-circle { stroke-dasharray: 320; stroke-dashoffset: 320; animation: draw .8s ease forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .pulse-ring { animation: pulse 1.8s ease-out infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(34,255,224,.45)} 80%{box-shadow:0 0 0 22px rgba(34,255,224,0)} 100%{box-shadow:0 0 0 0 rgba(34,255,224,0)} }
+  .fade-up { animation: fadeUp .4s ease both; }
+  @keyframes fadeUp { from{opacity:0; transform:translateY(14px)} to{opacity:1; transform:none} }
+  .modal-bg { background: rgba(3,4,12,.78); backdrop-filter: blur(6px); }
+  input:focus { outline: none; }
+  .copy-chip { transition: all .15s ease; }
+  .copy-chip:hover { border-color: #22ffe0; color: #22ffe0; }
+  ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
+</style>
+</head>
+<body class="bg-ink text-slate-200 min-h-screen relative overflow-x-hidden" data-sid="{{ session_id }}">
+
+<div class="grid-bg absolute inset-0 pointer-events-none"></div>
+<div class="absolute -top-40 -left-40 w-[480px] h-[480px] rounded-full pointer-events-none"
+     style="background: radial-gradient(circle, rgba(226,19,110,.22), transparent 65%)"></div>
+<div class="absolute -bottom-52 -right-40 w-[520px] h-[520px] rounded-full pointer-events-none"
+     style="background: radial-gradient(circle, rgba(34,255,224,.16), transparent 65%)"></div>
+
+<div class="relative z-10 max-w-lg mx-auto px-4 py-6 sm:py-10">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between mb-5">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl glass flex items-center justify-center text-neon font-display font-bold text-lg shadow-[0_0_24px_-6px_rgba(34,255,224,.6)]">৳</div>
+      <div>
+        <p id="gatewayName" class="font-display font-semibold text-white text-sm leading-tight">MFS Gateway</p>
+        <p class="text-[11px] text-slate-400 tracking-wide uppercase">Secure Checkout v1</p>
+      </div>
+    </div>
+    <div id="timerChip" class="glass rounded-full px-3.5 py-1.5 text-xs font-mono text-amber-300 flex items-center gap-1.5">
+      <span class="w-1.5 h-1.5 rounded-full bg-amber-300 animate-pulse"></span><span id="countdown">--:--</span>
+    </div>
+  </div>
+
+  <!-- Main card -->
+  <div id="mainCard" class="glass rounded-3xl overflow-hidden fade-up">
+    <div class="neon-line"></div>
+    <div class="p-5 sm:p-7">
+
+      <!-- Order summary -->
+      <div class="flex items-start justify-between">
+        <div>
+          <p class="text-[11px] uppercase tracking-widest text-slate-400">Paying</p>
+          <h1 id="merchantName" class="font-display text-lg font-semibold text-white mt-0.5">&nbsp;</h1>
+          <p class="text-xs text-slate-400 mt-1">Order <span id="orderId" class="font-mono text-slate-300"></span></p>
+        </div>
+        <div class="text-right">
+          <p class="text-[11px] uppercase tracking-widest text-slate-400">Amount</p>
+          <p class="font-display text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-neon to-cyan-300 mt-0.5">
+            ৳<span id="amount">0.00</span>
+          </p>
+          <p class="text-[11px] text-slate-500" id="currency">BDT</p>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="mt-6 glass rounded-2xl p-1.5 grid grid-cols-3 gap-1 text-[13px] font-medium text-slate-300">
+        <button class="tab-btn rounded-xl py-2.5 transition" data-tab="card" onclick="switchTab('card')">💳 Card</button>
+        <button class="tab-btn active rounded-xl py-2.5 transition" data-tab="mfs" onclick="switchTab('mfs')">📱 Mobile Banking</button>
+        <button class="tab-btn rounded-xl py-2.5 transition" data-tab="net" onclick="switchTab('net')">🏦 Net Banking</button>
+      </div>
+
+      <!-- MFS panel -->
+      <div id="panel-mfs" class="tab-panel mt-5">
+        <p class="text-xs text-slate-400 mb-3 flex items-center gap-2">
+          <span class="w-1.5 h-1.5 rounded-full bg-neon inline-block"></span>
+          Select your wallet provider — pay manually, then confirm with the TrxID
+        </p>
+        <div id="providerGrid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
+
+        <!-- Instruction block -->
+        <div id="payInstructions" class="hidden mt-5 rounded-2xl border border-white/10 bg-white/[.03] p-4 fade-up">
+          <div class="flex items-center gap-2.5 mb-3">
+            <div id="piBadge" class="w-9 h-9 rounded-xl flex items-center justify-center font-display font-bold text-white text-sm"></div>
+            <div>
+              <p class="font-semibold text-white text-sm" id="piTitle"></p>
+              <p class="text-[11px] text-slate-400" id="piSub"></p>
+            </div>
+          </div>
+          <ol class="space-y-2.5 text-[13px] text-slate-300">
+            <li class="flex gap-2.5"><span class="step-no">1</span>
+              <span id="piStep1"></span></li>
+            <li class="flex gap-2.5"><span class="step-no">2</span>
+              <span>Send <b class="text-white">৳<span id="piAmount"></span></b> to the number below
+                (<span id="piType" class="text-slate-400"></span>):</span></li>
+          </ol>
+          <div class="mt-3 flex items-center justify-between gap-3 rounded-xl bg-black/40 border border-white/10 px-4 py-3">
+            <span id="piNumber" class="font-mono text-xl tracking-wider text-neon select-all"></span>
+            <button class="copy-chip text-[11px] font-semibold uppercase tracking-wider border border-white/15 rounded-lg px-3 py-1.5 text-slate-300"
+                    onclick="copyText(document.getElementById('piNumber').textContent, this)">Copy</button>
+          </div>
+          <ol start="3" class="space-y-2.5 text-[13px] text-slate-300 mt-3">
+            <li class="flex gap-2.5"><span class="step-no">3</span>
+              <span>Use your <b>Order ID</b> as reference: <span id="piOrderRef" class="font-mono text-neon"></span></span></li>
+            <li class="flex gap-2.5"><span class="step-no">4</span>
+              <span>Come back and tap <b class="text-white">“I Paid — Verify”</b> with your wallet number &amp; TrxID from the confirmation SMS.</span></li>
+          </ol>
+          <button id="verifyBtn"
+                  class="mt-4 w-full py-3.5 rounded-2xl font-display font-semibold text-ink text-sm tracking-wide transition hover:brightness-110 active:scale-[.99]"
+                  style="background: linear-gradient(120deg, var(--brand,#22ffe0), #7ce7ff); box-shadow: 0 8px 28px -8px var(--brand,#22ffe0)"
+                  onclick="openVerifyModal()">I Paid — Verify Payment</button>
+        </div>
+      </div>
+
+      <!-- Card panel -->
+      <div id="panel-card" class="tab-panel hidden mt-5">
+        <div class="rounded-2xl border border-white/10 bg-white/[.03] p-5">
+          <div class="flex items-center justify-between mb-4">
+            <p class="text-sm font-semibold text-white">Debit / Credit Card</p>
+            <div class="flex gap-1.5 text-[10px] font-bold">
+              <span class="px-2 py-1 rounded-md bg-white/10">VISA</span>
+              <span class="px-2 py-1 rounded-md bg-white/10">Mastercard</span>
+              <span class="px-2 py-1 rounded-md bg-white/10">Amex</span>
+            </div>
+          </div>
+          <div class="space-y-3 opacity-60 pointer-events-none select-none">
+            <input disabled class="w-full glass rounded-xl px-4 py-3 text-sm" placeholder="Card number  ••••  ••••  ••••  ••••">
+            <div class="grid grid-cols-2 gap-3">
+              <input disabled class="glass rounded-xl px-4 py-3 text-sm" placeholder="MM / YY">
+              <input disabled class="glass rounded-xl px-4 py-3 text-sm" placeholder="CVC">
+            </div>
+            <button disabled class="w-full py-3 rounded-xl bg-white/10 text-slate-400 text-sm font-semibold">Pay ৳<span id="cardAmount"></span></button>
+          </div>
+          <p class="mt-3 text-[11px] text-amber-300/90 flex items-center gap-1.5">⚠ Card channel is onboarding — please use <b>Mobile Banking</b>.</p>
+        </div>
+      </div>
+
+      <!-- Net banking panel -->
+      <div id="panel-net" class="tab-panel hidden mt-5">
+        <div class="rounded-2xl border border-white/10 bg-white/[.03] p-5">
+          <p class="text-sm font-semibold text-white mb-3">Internet Banking</p>
+          <div class="grid grid-cols-3 gap-2.5 text-[11px] text-slate-400" id="bankGrid"></div>
+          <p class="mt-3 text-[11px] text-amber-300/90 flex items-center gap-1.5">⚠ Bank rails are onboarding — please use <b>Mobile Banking</b>.</p>
+        </div>
+      </div>
+
+      <!-- Status / alerts -->
+      <div id="alertBox" class="hidden mt-5 rounded-2xl px-4 py-3.5 text-sm fade-up"></div>
+
+      <!-- Confirming state -->
+      <div id="confirming" class="hidden mt-6 flex-col items-center gap-4 py-4">
+        <div class="spinner"></div>
+        <p class="text-sm text-slate-300 font-medium" id="confirmText">Contacting gateway…</p>
+        <p class="text-[11px] text-slate-500 -mt-2">Do not close this window</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Success screen -->
+  <div id="successCard" class="hidden glass rounded-3xl overflow-hidden fade-up">
+    <div class="neon-line"></div>
+    <div class="p-8 flex flex-col items-center text-center">
+      <div class="w-24 h-24 rounded-full pulse-ring flex items-center justify-center bg-neon/10 border border-neon/40">
+        <svg viewBox="0 0 100 100" class="w-16 h-16">
+          <circle class="check-circle" cx="50" cy="50" r="44" fill="none" stroke="#22ffe0" stroke-width="4"/>
+          <path class="check-path" d="M30 52 L45 66 L72 38" fill="none" stroke="#22ffe0" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <h2 class="font-display text-2xl font-bold text-white mt-6">Payment Successful</h2>
+      <p class="text-slate-400 text-sm mt-1.5">৳<span id="successAmount"></span> received via <span id="successProvider" class="capitalize text-slate-200"></span></p>
+      <div class="mt-5 w-full rounded-2xl bg-black/40 border border-white/10 px-5 py-4 text-sm space-y-2">
+        <div class="flex justify-between"><span class="text-slate-500">TrxID</span><span id="successTrx" class="font-mono text-neon"></span></div>
+        <div class="flex justify-between"><span class="text-slate-500">Order</span><span id="successOrder" class="font-mono text-slate-200"></span></div>
+      </div>
+      <p id="redirectMsg" class="text-xs text-slate-500 mt-5 hidden">Redirecting back to the merchant in <span id="redirectIn" class="text-neon font-semibold">5</span>s…</p>
+    </div>
+  </div>
+
+  <!-- Expired screen -->
+  <div id="expiredCard" class="hidden glass rounded-3xl overflow-hidden fade-up">
+    <div class="neon-line" style="background:linear-gradient(90deg,transparent,#ff5470 40%,transparent)"></div>
+    <div class="p-8 flex flex-col items-center text-center">
+      <div class="w-20 h-20 rounded-full flex items-center justify-center bg-rose-500/10 border border-rose-400/40 text-4xl">⏱️</div>
+      <h2 class="font-display text-xl font-bold text-white mt-5" id="terminalTitle">Session Expired</h2>
+      <p class="text-slate-400 text-sm mt-1.5" id="terminalMsg">This payment window has closed. Please restart checkout from the merchant site.</p>
+    </div>
+  </div>
+
+  <!-- Verify modal -->
+  <div id="verifyModal" class="hidden fixed inset-0 z-50 modal-bg items-end sm:items-center justify-center p-0 sm:p-6">
+    <div class="glass w-full max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden fade-up">
+      <div class="px-6 py-4 flex items-center justify-between" id="modalHead" style="background: linear-gradient(120deg, var(--brand,#e2136e), rgba(0,0,0,.4))">
+        <div class="flex items-center gap-3">
+          <div id="modalBadge" class="w-9 h-9 rounded-xl bg-black/30 flex items-center justify-center font-display font-bold text-white text-sm"></div>
+          <div>
+            <p class="font-display font-semibold text-white text-sm" id="modalTitle"></p>
+            <p class="text-[11px] text-white/70">৳<span id="modalAmount"></span> • Order <span id="modalOrder" class="font-mono"></span></p>
+          </div>
+        </div>
+        <button onclick="closeVerifyModal()" class="text-white/70 hover:text-white text-xl leading-none px-2">✕</button>
+      </div>
+      <div class="p-6 space-y-4">
+        <div>
+          <label class="text-[11px] uppercase tracking-widest text-slate-400">Your <span id="modalProviderName"></span> wallet number</label>
+          <input id="walletInput" inputmode="numeric" maxlength="11" placeholder="01XXXXXXXXX"
+                 class="mt-1.5 w-full glass rounded-xl px-4 py-3.5 font-mono text-lg tracking-wider text-white placeholder-slate-600 focus:border-neon/60 border border-white/10">
+        </div>
+        <div>
+          <label class="text-[11px] uppercase tracking-widest text-slate-400">Transaction ID (TrxID)</label>
+          <input id="trxidInput" maxlength="24" placeholder="e.g. 9HK8A2X1LM"
+                 class="mt-1.5 w-full glass rounded-xl px-4 py-3.5 font-mono text-lg uppercase tracking-wider text-white placeholder-slate-600 focus:border-neon/60 border border-white/10">
+          <p class="text-[11px] text-slate-500 mt-1.5">📩 Find it in the confirmation SMS from your provider.</p>
+        </div>
+        <div id="modalError" class="hidden rounded-xl border border-rose-400/40 bg-rose-500/10 text-rose-300 text-xs px-4 py-3"></div>
+        <button id="modalSubmit" onclick="submitVerify()"
+                class="w-full py-3.5 rounded-2xl font-display font-semibold text-ink text-sm tracking-wide transition hover:brightness-110 active:scale-[.99] disabled:opacity-50"
+                style="background: linear-gradient(120deg, var(--brand,#22ffe0), #7ce7ff)">
+          Verify Payment
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-center text-[11px] text-slate-600 mt-6">
+    🔒 256-bit signed webhook verification • <span id="footerGateway">MFS Gateway</span> checkout engine •
+    Order <span id="footerOrder" class="font-mono"></span>
+  </p>
+</div>
+
+<style>
+  .step-no { min-width: 20px; height: 20px; border-radius: 8px; background: rgba(34,255,224,.12);
+             color: #22ffe0; font-size: 11px; font-weight: 700; display: inline-flex;
+             align-items: center; justify-content: center; margin-top: 1px; }
+</style>
+
+{% raw %}
+<script>
+const SID = document.body.dataset.sid;
+const API = '/api/v1/checkout/' + SID;
+const PROVIDERS = {
+  bkash:  { label: 'bKash',      badge: 'bK', color: '#e2136e', ussd: 'Dial *247# or open the bKash app → "Send Money".' },
+  nagad:  { label: 'Nagad',      badge: 'N',  color: '#f6921e', ussd: 'Dial *167# or open the Nagad app → "Send Money".' },
+  rocket: { label: 'Rocket',     badge: 'R',  color: '#8c3494', ussd: 'Dial *322# or open the Rocket app → "Send Money".' },
+  upay:   { label: 'Upay',       badge: 'U',  color: '#ffd400', ussd: 'Dial *268# or open the Upay app → "Send Money".' },
+  tap:    { label: "Tap'n Pay",  badge: 'T',  color: '#00c9a7', ussd: 'Open the Tap\'n Pay app → "Send Money".' },
+  meghna: { label: 'Meghna Pay', badge: 'M',  color: '#ff5e5e', ussd: 'Open the Meghna Pay app → "Send Money".' },
+};
+const BANKS = ['City Bank','BRAC Bank','EBL','DBBL','Islami Bank','AB Bank','MTB','Prime Bank','UCB'];
+let S = null;             // session state
+let selected = null;      // selected provider key
+let pollTimer = null, pollLeft = 0;
+let countdownTimer = null;
+
+function el(id){ return document.getElementById(id); }
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function init() {
+  let res = await fetch(API);
+  if (!res.ok) { showTerminal('Invalid Session', 'This payment link is invalid or has been removed.'); return; }
+  S = await res.json();
+  el('gatewayName').textContent = S.gateway_name; el('footerGateway').textContent = S.gateway_name;
+  el('merchantName').textContent = S.merchant_name;
+  el('orderId').textContent = S.order_id; el('footerOrder').textContent = S.order_id;
+  el('amount').textContent = S.amount_bdt; el('cardAmount').textContent = S.amount_bdt;
+  el('currency').textContent = S.currency;
+
+  if (S.status === 'paid') { showSuccess(S.trxid || '', S.provider || ''); return; }
+  if (S.status === 'expired' || S.status === 'cancelled') {
+    showTerminal('Session Expired', 'This payment window has closed. Please restart checkout from the merchant site.'); return;
+  }
+
+  renderProviders();
+  renderBanks();
+  startCountdown(new Date(S.expires_at).getTime());
+}
+
+function renderProviders() {
+  const grid = el('providerGrid');
+  const keys = Object.keys(S.methods || {});
+  if (!keys.length) { grid.innerHTML = '<p class="col-span-full text-sm text-amber-300">No wallet providers enabled — contact the merchant.</p>'; return; }
+  grid.innerHTML = keys.map(k => {
+    const p = PROVIDERS[k] || { label: k, badge: (k[0]||'?').toUpperCase(), color: '#22ffe0' };
+    return `<button class="tile glass rounded-2xl p-3.5 flex flex-col items-center gap-2 text-center" style="--brand:${p.color}"
+        onclick="selectProvider('${k}')">
+      <span class="w-11 h-11 rounded-2xl flex items-center justify-center font-display font-bold text-white text-base"
+            style="background:linear-gradient(135deg, ${p.color}, rgba(0,0,0,.35)); box-shadow:0 6px 20px -6px ${p.color}">${p.badge}</span>
+      <span class="text-[13px] font-semibold text-slate-100">${esc(p.label)}</span>
+      <span class="text-[10px] uppercase tracking-wider text-slate-500">${esc(S.methods[k].type)}</span>
+    </button>`;
+  }).join('');
+}
+
+function renderBanks() {
+  el('bankGrid').innerHTML = BANKS.map(b =>
+    `<div class="rounded-xl border border-white/10 bg-white/[.02] px-3 py-3 text-center opacity-60">
+       <div class="text-lg mb-1">🏦</div>${esc(b)}</div>`).join('');
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  ['mfs','card','net'].forEach(t => el('panel-' + t).classList.toggle('hidden', t !== tab));
+}
+
+function selectProvider(key) {
+  selected = key;
+  document.querySelectorAll('#providerGrid .tile').forEach((t, i) =>
+    t.classList.toggle('active', Object.keys(S.methods)[i] === key));
+  const p = PROVIDERS[key] || { label: key, badge: '?', color: '#22ffe0' };
+  const m = S.methods[key];
+  document.documentElement.style.setProperty('--brand', p.color);
+  el('piBadge').style.background = `linear-gradient(135deg, ${p.color}, rgba(0,0,0,.35))`;
+  el('piBadge').textContent = p.badge;
+  el('piTitle').textContent = 'Pay with ' + p.label;
+  el('piSub').textContent = (m.type === 'Agent' ? 'Cash-in to Agent number' : 'Send Money to Personal number');
+  el('piStep1').innerHTML = esc(p.ussd);
+  el('piAmount').textContent = S.amount_bdt;
+  el('piType').textContent = m.type === 'Agent' ? 'Cash In' : 'Send Money';
+  el('piNumber').textContent = m.number;
+  el('piOrderRef').textContent = S.order_id;
+  el('payInstructions').classList.remove('hidden');
+  el('payInstructions').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function openVerifyModal() {
+  if (!selected) return;
+  const p = PROVIDERS[selected] || { label: selected, badge: '?', color: '#22ffe0' };
+  el('modalBadge').textContent = p.badge;
+  el('modalTitle').textContent = 'Confirm ' + p.label + ' Payment';
+  el('modalAmount').textContent = S.amount_bdt;
+  el('modalOrder').textContent = S.order_id;
+  el('modalProviderName').textContent = p.label;
+  el('modalError').classList.add('hidden');
+  el('walletInput').value = ''; el('trxidInput').value = '';
+  el('verifyModal').classList.remove('hidden');
+  el('verifyModal').classList.add('flex');
+  setTimeout(() => el('walletInput').focus(), 60);
+}
+function closeVerifyModal() { el('verifyModal').classList.add('hidden'); el('verifyModal').classList.remove('flex'); }
+
+function copyText(text, btn) {
+  navigator.clipboard?.writeText(text.trim()).then(() => {
+    const old = btn.textContent; btn.textContent = 'Copied ✓';
+    setTimeout(() => btn.textContent = old, 1400);
+  });
+}
+
+function setAlert(kind, msg) {
+  const box = el('alertBox');
+  const styles = {
+    info:  'border-cyan-400/40 bg-cyan-400/10 text-cyan-200',
+    warn:  'border-amber-400/40 bg-amber-400/10 text-amber-200',
+    error: 'border-rose-400/40 bg-rose-500/10 text-rose-300 shake',
+  };
+  box.className = 'mt-5 rounded-2xl px-4 py-3.5 text-sm fade-up border ' + (styles[kind] || styles.info);
+  box.textContent = msg;
+  box.classList.remove('hidden');
+}
+function clearAlert(){ el('alertBox').classList.add('hidden'); }
+
+async function submitVerify() {
+  const wallet = el('walletInput').value.trim();
+  const trxid = el('trxidInput').value.trim().toUpperCase();
+  const err = el('modalError');
+  err.classList.add('hidden');
+  if (!/^01\d{9}$/.test(wallet)) { err.textContent = 'Enter a valid 11-digit wallet number (01XXXXXXXXX).'; err.classList.remove('hidden'); return; }
+  if (!/^[A-Z0-9\-]{6,24}$/.test(trxid)) { err.textContent = 'Enter a valid TrxID (6–24 letters/digits).'; err.classList.remove('hidden'); return; }
+
+  closeVerifyModal(); clearAlert();
+  showConfirming('Verifying your transaction…');
+  let res, data;
+  try {
+    res = await fetch('/api/v1/checkout/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: SID, provider: selected, wallet, trxid })
+    });
+    data = await res.json();
+  } catch (e) { hideConfirming(); setAlert('error', 'Network error — please try again.'); return; }
+  hideConfirming();
+  handleVerifyResult(data);
+}
+
+function handleVerifyResult(data) {
+  switch (data.result) {
+    case 'paid':
+      showSuccess(data.trxid || '', data.provider || selected);
+      if (data.redirect) startRedirect(data.redirect);
+      break;
+    case 'pending':
+      setAlert('warn', '⏳ ' + (data.message || 'Waiting for the payment SMS…'));
+      startPolling();
+      break;
+    case 'amount_mismatch': setAlert('error', '❌ ' + data.message); break;
+    case 'used': setAlert('error', '❌ ' + (data.message || 'TrxID already used.')); break;
+    case 'locked': stopPolling(); showTerminal('Verification Locked', data.message); break;
+    case 'expired': stopPolling(); showTerminal('Session Expired', data.message); break;
+    default: setAlert('error', '❌ ' + (data.message || 'Verification failed.'));
+  }
+}
+
+function showConfirming(text) { el('confirmText').textContent = text; el('confirming').classList.remove('hidden'); el('confirming').classList.add('flex'); }
+function hideConfirming() { el('confirming').classList.add('hidden'); el('confirming').classList.remove('flex'); }
+
+function startPolling() {
+  stopPolling(); pollLeft = 24; // ~2 minutes @5s
+  showConfirming('Waiting for the SMS to arrive at the gateway… (auto-checking)');
+  pollTimer = setInterval(async () => {
+    pollLeft--;
+    try {
+      const r = await fetch(API + '/status'); const d = await r.json();
+      if (d.status === 'paid') { stopPolling(); hideConfirming(); showSuccess(d.trxid || '', d.provider || ''); if (d.redirect) startRedirect(d.redirect); return; }
+      if (d.status === 'expired' || d.status === 'cancelled') { stopPolling(); hideConfirming(); showTerminal('Session Expired', 'This payment window has closed.'); return; }
+    } catch (e) { /* keep polling */ }
+    if (pollLeft <= 0) { stopPolling(); hideConfirming(); setAlert('warn', 'Still not confirmed. If you completed payment, press “I Paid — Verify” again in a minute.'); }
+    else {
+      clearAlert();
+      setAlert('warn', `⏳ Not received yet — auto-checking (${pollLeft} tries left). If SMS arrived on the shop's phone, you'll be confirmed automatically.`);
+    }
+  }, 5000);
+}
+function stopPolling(){ if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } hideConfirming(); }
+
+function showSuccess(trxid, provider) {
+  stopPolling(); stopCountdown();
+  el('mainCard').classList.add('hidden'); el('timerChip').classList.add('hidden');
+  el('successAmount').textContent = S ? S.amount_bdt : '';
+  el('successProvider').textContent = (PROVIDERS[provider]?.label) || provider || 'MFS';
+  el('successTrx').textContent = trxid || '—';
+  el('successOrder').textContent = S ? S.order_id : '';
+  el('successCard').classList.remove('hidden');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function startRedirect(url) {
+  el('redirectMsg').classList.remove('hidden');
+  let n = 5;
+  const t = setInterval(() => { n--; el('redirectIn').textContent = n; if (n <= 0) { clearInterval(t); window.location.href = url; } }, 1000);
+}
+
+function showTerminal(title, msg) {
+  stopPolling(); stopCountdown();
+  el('mainCard').classList.add('hidden'); el('timerChip').classList.add('hidden');
+  el('terminalTitle').textContent = title; el('terminalMsg').textContent = msg || '';
+  el('expiredCard').classList.remove('hidden');
+}
+
+function startCountdown(expiresAt) {
+  countdownTimer = setInterval(() => {
+    const ms = expiresAt - Date.now();
+    if (ms <= 0) { showTerminal('Session Expired', 'This payment window has closed. Please restart checkout from the merchant site.'); return; }
+    const m = Math.floor(ms / 60000), s = Math.floor((ms % 60000) / 1000);
+    el('countdown').textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+    if (ms < 120000) el('timerChip').classList.add('text-rose-300');
+  }, 500);
+}
+function stopCountdown(){ if (countdownTimer) clearInterval(countdownTimer); }
+
+init();
+</script>
+{% endraw %}
+</body>
+</html>

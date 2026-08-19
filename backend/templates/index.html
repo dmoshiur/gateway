@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ gateway_name }} · Automated MFS Payment Gateway</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  body { font-family: Inter, sans-serif; }
+  .glass { background: rgba(15,18,38,.72); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.08); }
+  .grid-bg { background-image: linear-gradient(rgba(34,255,224,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34,255,224,.05) 1px, transparent 1px); background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 100% 70% at 50% 0%, #000 25%, transparent 100%); }
+  .neon-line { background: linear-gradient(90deg, transparent, #22ffe0 30%, #e2136e 70%, transparent); height: 1px; }
+  .card-link { transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+  .card-link:hover { transform: translateY(-3px); border-color: rgba(34,255,224,.5); box-shadow: 0 12px 40px -12px rgba(34,255,224,.4); }
+  .fade-up { animation: fadeUp .5s ease both; } @keyframes fadeUp { from{opacity:0; transform:translateY(14px)} to{opacity:1; transform:none} }
+</style>
+</head>
+<body class="bg-[#05060f] text-slate-200 min-h-screen relative overflow-x-hidden">
+<div class="grid-bg fixed inset-0 pointer-events-none"></div>
+<div class="fixed -top-40 -left-40 w-[480px] h-[480px] rounded-full pointer-events-none" style="background: radial-gradient(circle, rgba(34,255,224,.14), transparent 65%)"></div>
+<div class="fixed -bottom-40 -right-40 w-[480px] h-[480px] rounded-full pointer-events-none" style="background: radial-gradient(circle, rgba(226,19,110,.16), transparent 65%)"></div>
+
+<div class="relative z-10 max-w-3xl mx-auto px-4 py-14 sm:py-20 text-center">
+  <div class="w-16 h-16 mx-auto rounded-2xl glass flex items-center justify-center text-3xl font-bold text-[#22ffe0] shadow-[0_0_40px_-8px_rgba(34,255,224,.8)] fade-up" style="font-family:'Space Grotesk'">৳</div>
+  <h1 class="mt-6 text-3xl sm:text-5xl font-bold text-white fade-up" style="font-family:'Space Grotesk'">{{ gateway_name }}</h1>
+  <p class="mt-3 text-sm sm:text-base text-slate-400 fade-up">Automated MFS payment acceptance for Bangladesh — powered by real SMS capture from Android Termux listeners.<br class="hidden sm:block">
+    <span class="text-[#e2136e] font-semibold">bKash</span> · <span class="text-[#f6921e] font-semibold">Nagad</span> ·
+    <span class="text-[#8c3494] font-semibold">Rocket</span> · <span class="text-[#ffd400] font-semibold">Upay</span> · Tap · Meghna Pay</p>
+
+  <div class="grid sm:grid-cols-3 gap-4 mt-10 text-left fade-up">
+    <a href="/dashboard" class="card-link glass rounded-2xl p-5 block">
+      <p class="text-2xl mb-2">🏪</p>
+      <p class="font-semibold text-white text-sm" style="font-family:'Space Grotesk'">Merchant Dashboard</p>
+      <p class="text-[11px] text-slate-500 mt-1">API keys, transactions, sandbox test checkout &amp; live integration snippets.</p>
+    </a>
+    <a href="/admin" class="card-link glass rounded-2xl p-5 block">
+      <p class="text-2xl mb-2">🛡️</p>
+      <p class="font-semibold text-white text-sm" style="font-family:'Space Grotesk'">Superadmin Console</p>
+      <p class="text-[11px] text-slate-500 mt-1">Full control: merchants, devices, SMS logs, settings &amp; audit trail.</p>
+    </a>
+    <div class="glass rounded-2xl p-5">
+      <p class="text-2xl mb-2">📡</p>
+      <p class="font-semibold text-white text-sm" style="font-family:'Space Grotesk'">Termux Listener</p>
+      <p class="text-[11px] text-slate-500 mt-1">Deploy <span class="font-mono text-[#22ffe0]">termux/termux_listener.py</span> to any Android phone to start capturing payment SMS.</p>
+    </div>
+  </div>
+
+  <div class="glass rounded-2xl overflow-hidden mt-6 text-left fade-up">
+    <div class="neon-line"></div>
+    <div class="p-5">
+      <p class="text-[10px] uppercase tracking-widest text-slate-500 mb-3">API surface</p>
+      <div class="space-y-2 font-mono text-[11px]">
+        <p><span class="text-emerald-400">POST</span> <span class="text-slate-300">/api/v1/checkout/create</span> <span class="text-slate-600">— create payment session (merchant HMAC)</span></p>
+        <p><span class="text-emerald-400">POST</span> <span class="text-slate-300">/api/v1/webhook/sms</span> <span class="text-slate-600">— Termux listener upload (device HMAC)</span></p>
+        <p><span class="text-emerald-400">POST</span> <span class="text-slate-300">/api/v1/checkout/verify</span> <span class="text-slate-600">— buyer TrxID verification</span></p>
+        <p><span class="text-cyan-400">GET&nbsp;</span> <span class="text-slate-300">/api/v1/payments/&lt;session_id&gt;</span> <span class="text-slate-600">— server-side status query</span></p>
+        <p><span class="text-cyan-400">GET&nbsp;</span> <span class="text-slate-300">/healthz</span> <span class="text-slate-600">— liveness probe</span></p>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-[11px] text-slate-600 mt-8 fade-up">🔐 HMAC-SHA256 signed webhooks · PBKDF2 credentials · replay-protected TrxID ledger</p>
+</div>
+</body>
+</html>

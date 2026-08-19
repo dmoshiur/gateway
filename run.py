@@ -1,30 +1,25 @@
-"""Entry point for the MFS Payment Gateway backend.
+#!/usr/bin/env python3
+"""Entry point:  python run.py [--init-demo]
 
-Usage:
-    python run.py                 # start on 0.0.0.0:5000 (dev)
-    python run.py --port 8000     # custom port
-    python run.py --init-only     # create DB + seed demo data, then exit
+Flags:
+  --init-demo   Seed a demo merchant (demo@merchant.test / demo12345), a demo
+                API key pair and a demo Termux device; write the credentials
+                to data/demo_credentials.json, then start the server.
+
+Env:
+  PORT                  default 8000
+  GATEWAY_DB            SQLite path (default data/gateway.db)
+  GATEWAY_SECRET        Flask/session + signing secret
+  GATEWAY_ADMIN_USER    superadmin username (first-boot seeding)
+  GATEWAY_ADMIN_PASSWORD superadmin password (first-boot seeding)
 """
-import argparse
 
-from backend.app import create_app
-from backend.db import init_db, seed
+import os
+import sys
 
-parser = argparse.ArgumentParser(description="MFS Payment Gateway")
-parser.add_argument("--host", default="0.0.0.0")
-parser.add_argument("--port", type=int, default=5000)
-parser.add_argument("--debug", action="store_true")
-parser.add_argument("--init-only", action="store_true")
-args = parser.parse_args()
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-app = create_app()
-with app.app_context():
-    init_db()
-    seed()
+from backend.app import main  # noqa: E402
 
-if args.init_only:
-    print("[gateway] Database initialized and seeded. Exiting.")
-    raise SystemExit(0)
-
-print(f"[gateway] Listening on http://{args.host}:{args.port}")
-app.run(host=args.host, port=args.port, debug=args.debug)
+if __name__ == "__main__":
+    main()

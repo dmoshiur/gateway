@@ -1,251 +1,287 @@
-# ⚡ MFS Payment Gateway
+# ৳ MFS Payment Gateway — Automated SMS-Driven Checkout for Bangladesh
 
-An automated **Mobile Financial Services (MFS) payment gateway** for Bangladesh
-(bKash · Nagad · Rocket · Upay · Tap · Meghna Pay) with **Android Termux SMS
-automation**, a Flask backend, HMAC-signed APIs, a merchant/superadmin console,
-and a cyberpunk glassmorphism checkout portal.
+Accept **bKash, Nagad, Rocket, Upay, Tap & Meghna Pay** payments automatically,
+verified by the real payment **SMS** landing on an Android phone you control —
+no aggregator contracts, no per-transaction middleman fees.
 
 ```
-                         ┌──────────────────────────────────────────────┐
-  Customer sends money   │  Android phone (Termux)                       │
-  to your MFS number ───►│  termux_listener.py polls termux-sms-list     │
-                         │  → regex-parse SMS → HMAC-sign → POST          │
-                         └───────────────────┬──────────────────────────┘
-                                             │ HTTPS  /api/v1/webhook/sms
-                                             ▼
-                    ┌──────────────────────────────────────────────┐
-                    │  Central Backend (Flask)                      │
-                    │  · verify webhook (device HMAC)               │
-                    │  · store parsed SMS in SQLite/PostgreSQL      │
-                    │  · auto-match pending checkouts (TrxID+amount)│
-                    │  · API-key management (unlimited per merchant)│
-                    │  · superadmin + merchant dashboards           │
-                    └───────────────┬───────────────────────────────┘
-                                    │  /api/v1/checkout/verify (HMAC)
-                                    ▼
-                    ┌──────────────────────────────────────────────┐
-                    │  Merchant website / checkout portal           │
-                    │  verify TrxID + amount → confirmed / mismatch │
-                    └──────────────────────────────────────────────┘
+┌──────────────────┐   SMS (money received)   ┌───────────────────────┐
+│  MFS Provider    │ ───────────────────────▶ │ Android + Termux       │
+│  (bKash/Nagad/…) │                          │ termux_listener.py     │
+└──────────────────┘                          └─────────┬─────────────┘
+                                                        │ HMAC-signed POST
+                                                        ▼
+┌──────────────────┐   checkout_url   ┌───────────────────────────────┐
+│  Merchant Shop   │ ◀─────────────── │ Central Gateway (Flask+SQLite) │
+│  (your app)      │                  │  • SMS ledger + TrxID matcher  │
+└──────┬───────────┘                  │  • Admin + Merchant consoles   │
+       │ buyer pays, submits TrxID    │  • IPN webhooks                │
+       └────────────────────────────▶ └───────────────────────────────┘
 ```
 
 ---
 
-## 1. Project structure
-
-```
-gateway/
-├── backend/
-│   ├── app.py          # Flask app factory + all routes
-│   ├── config.py       # env-driven configuration
-│   ├── db.py           # SQLite layer + schema + seed (swap for Postgres)
-│   ├── parsers.py      # MFS SMS regex parsing engine
-│   └── auth.py         # HMAC signing, API keys, checkout tokens
-├── templates/          # checkout / login / admin / dashboard (Jinja)
-├── static/
-│   ├── css/style.css   # cyberpunk / glassmorphism design system
-│   └── js/             # checkout.js · admin.js · dashboard.js
-├── termux/
-│   ├── termux_listener.py   # SMS listener (self-contained)
-│   ├── config.example.json
-│   └── install.sh
-├── run.py              # entry point
-└── requirements.txt
-```
-
----
-
-## 2. Quick start (backend)
+## 1. Quick start (5 minutes)
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
 
-python run.py                    # http://0.0.0.0:5000
-# or: python run.py --port 8000 --init-only   (DB only)
+# start the gateway (creates data/gateway.db, admin + demo merchant/device)
+export GATEWAY_ADMIN_PASSWORD='choose-a-strong-admin-password'
+python run.py --init-demo
+
+# in a second terminal: full end-to-end simulation
+# (checkout create → SMS webhook → buyer verify → IPN callback)
+python tools/demo_flow.py
 ```
 
-On first boot the database is created and **demo data is seeded**:
+| Surface            | URL                        | Credentials (demo mode)                    |
+|--------------------|----------------------------|---------------------------------------------|
+| Superadmin console | `/admin`                   | `admin` / `$GATEWAY_ADMIN_PASSWORD`         |
+| Merchant dashboard | `/dashboard`               | `demo@merchant.test` / `demo12345`          |
+| Landing page       | `/`                        | —                                           |
+| Demo credentials   | `data/demo_credentials.json` | merchant API key pair + Termux device secret |
 
-| Role       | Login                          | Notes                         |
-|------------|--------------------------------|-------------------------------|
-| Superadmin | `admin` / `admin123`           | `/admin` full system control  |
-| Merchant   | `merchant@demo.com` / `demo123`| `/dashboard` merchant console |
-| Device     | `termux-demo-device`           | secret `demo-device-secret`   |
-
-> ⚠️ These are **demo credentials** — change them (or set `SEED_*` env vars)
-> before any real deployment.
-
-### Test the checkout immediately
-
-The seed includes sample SMS logs, so you can verify a payment out of the box:
-
-1. Open **`/checkout`**.
-2. Pick **bKash**, enter phone `01712345678`, amount **৳ 500.00**.
-3. Enter TrxID **`8JX4A2B3C4`** → ✅ *Payment verified*.
-
-Other seeded test cases: `NAGAD123456` (৳ 250.50), `ROCKET2024` (৳ 1000),
-`UPAY998877` (৳ 750), `TAP555321` (৳ 300).
-
----
-
-## 3. Termux listener setup
+Run the regex/unit tests:
 
 ```bash
-# on the Android phone, in Termux
-pkg update && pkg install python termux-api
-pip install requests
-termux-setup-storage                       # grant storage access
-termux-sms-list -l 3                       # verify SMS access works
-
-# copy the listener over (scp / adb push) then:
-cd ~/mfs-gateway/termux
-cp config.example.json config.json         # edit backend_url + device creds
-python termux_listener.py --once           # single poll test
-python termux_listener.py                  # run continuously
+python tests/test_sms_parser.py
+python termux/termux_listener.py --test \
+  "You have received Tk 1,500.00 from 01712345678. TrxID 9HK8A2X1LM at 19/08/2026 14:30"
 ```
-
-`install.sh` also sets up a **Termux:Boot** autostart script (needs the
-Termux:Boot app) and `termux-wake-lock` to keep the listener alive.
-
-The listener:
-- polls `termux-sms-list` at `poll_interval_seconds`,
-- parses incoming MFS SMS with the same regex engine as the backend,
-- POSTs `{ messages: [ {provider, amount, trx_id, sender_number, raw, ...} ] }`
-  to `/api/v1/webhook/sms` signed with the device secret,
-- retries with exponential backoff and tracks a cursor so no SMS is processed twice.
 
 ---
 
-## 4. API reference
+## 2. Architecture
 
-All request bodies are JSON. HMAC-signed endpoints require these headers:
+### 2.1 Android Termux listener (`termux/termux_listener.py`)
 
-| Header        | Value                                              |
-|---------------|----------------------------------------------------|
-| `X-Timestamp` | Unix epoch seconds (rejected if > 300 s old)       |
-| `X-Nonce`     | Random per-request string (single-use)             |
-| `X-Signature` | `HMAC-SHA256(secret, "<ts>.<nonce>.<METHOD>.<path>.<sha256(body)>")` hex |
-| `X-Device-Id` | *(webhook only)* the device identifier             |
-| `X-Api-Key`   | *(checkout only)* the merchant public API key      |
+A **zero-dependency** (stdlib-only) Python daemon running on the phone that
+receives MFS balance-update SMS:
 
-Signature canonical string:
+1. Polls the inbox every N seconds: `termux-sms-list -l 200 -t inbox`
+   (alternative source: MFS-app notifications via `termux-notification-list`
+   with `"source": "notifications"` in config).
+2. Tracks the `_id` cursor in `~/.mfs_gateway/state.json`; first run baselines
+   to the newest SMS (no history replay — use `--process-existing` to override).
+3. Runs the provider regex engine → `{provider, sender, amount_paisa, trxid}`.
+4. Hashes the raw body (`raw_hash`) — **raw SMS never leaves the phone**.
+5. POSTs to `POST /api/v1/webhook/sms`, HMAC-SHA256 signed:
+   `hex(HMAC(secret, "{device_id}\n{unix_ts}\n{exact_body}"))`.
+6. Offline retry queue with exponential backoff (survives mobile-data dropouts),
+   heartbeats every ~60 s so the admin panel shows the phone as online.
 
-```
-message   = f"{timestamp}.{nonce}.{method}.{path}.{sha256_hex(body)}"
-signature = hmac.new(secret, message, hashlib.sha256).hexdigest()
-```
+### 2.2 Central backend (`backend/`)
 
-### `POST /api/v1/webhook/sms` — Termux → backend
-```json
-{ "messages": [ { "raw": "You have received Tk 500 ... TrxID 8JX4A2B3C4", "received_at": "..." } ] }
-```
-or pre-parsed:
-```json
-{ "messages": [ { "provider": "bKash", "amount": 500.0, "trx_id": "8JX4A2B3C4", "sender_number": "01712345678" } ] }
-```
+| Module          | Responsibility |
+|-----------------|----------------|
+| `app.py`        | All HTTP routes, auth decorators, rate limiting, IPN dispatch |
+| `database.py`   | SQLite (WAL), schema, settings, seeding, audit trail |
+| `sms_parser.py` | Regex engine (mirrored in the listener) |
+| `security.py`   | HMAC signing/verify, PBKDF2 passwords, key generation |
 
-### `POST /api/v1/checkout/verify` — payment verification
-Server-to-server (HMAC with `X-Api-Key`) **or** hosted checkout (pass the
-server-issued `checkout_token`):
-```json
-{ "trx_id": "8JX4A2B3C4", "amount": 500.0, "provider": "bkash", "customer_phone": "01712345678" }
-```
-Response statuses: `verified` | `pending` | `mismatch`.
+**Payment ledger model** — webhook facts and checkout sessions are separate
+tables joined at verification time:
 
-### `POST /api/v1/merchant/keys/generate` — create an API key (session-auth)
-```json
-{ "label": "Production key" }
-```
+* `sms_transactions` — one row per received payment SMS. `UNIQUE(trxid)`
+  globally ⇒ a TrxID can never be entered twice (replay-proof ledger).
+* `payment_sessions` — merchant orders. `UNIQUE(merchant_id, order_id)` ⇒
+  idempotent checkout creation.
 
-### UI routes
-`GET /checkout` · `GET /admin` · `GET /dashboard` · `GET /login` · `GET /logout`
+Verification (`POST /api/v1/checkout/verify`) is an **atomic claim**:
+the SMS row flips `unused → consumed` and the session flips `pending → paid`
+in one transaction — the same TrxID can never pay two orders.
 
-Additional admin/merchant/dashboard JSON endpoints are listed in
-`backend/app.py` (stats, merchants, devices, transactions, sms, keys, sandbox).
+### 2.3 Consoles
+
+* **Superadmin** (`/admin`) — live volume stats, SMS feed, payment sessions,
+  merchant suspend/activate, device register/revoke, global API-key revoke,
+  gateway settings (provider wallet numbers shown at checkout, session TTL),
+  audit log, and a **test SMS injector** for end-to-end tests without a phone.
+* **Merchant** (`/dashboard`) — unlimited API key generation (secrets shown
+  once), live transaction table, sandbox “test checkout” launcher, and a
+  copy-paste integration snippet.
 
 ---
 
-## 5. SMS regex patterns
+## 3. Deploying the Termux listener
 
-Exact Python regex fragments used by `backend/parsers.py` (also embedded in the
-listener). Note the amount class is `[0-9,.]`-style — the examples in many
-tutorials mistakenly write `[0-0,.]`; the correct digit range is `0-9`.
+On the Android phone that receives the payment SMS (use the **dedicated shop
+wallet SIM**), install **Termux** and the **Termux:API** companion app
+(F-Droid builds recommended — keep both from the same source):
 
-| Field  | Fragment |
-|--------|----------|
-| Amount | `(?P<amount>\d[\d,]*(?:\.\d{1,2})?)` |
-| Mobile | `(?P<sender>(?:\+?88)?01[3-9]\d{8})` |
-| TrxID  | `(?P<trx_id>[A-Za-z0-9]{6,24})` |
-| Txn kw | `(?:Trx\s*ID\|Txn\s*ID\|TrxID\|TxnID\|Transaction\s+ID)` |
-
-**bKash (receive)**
-```regex
-received\s+Tk\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?).*?\bfrom\s*(?P<sender>(?:\+?88)?01[3-9]\d{8}).*?(?:Trx\s*ID|Txn\s*ID|TrxID|TxnID|Transaction\s+ID)\s*:?\s*(?P<trx_id>[A-Za-z0-9]{6,24})
-```
-**bKash (send money — debit)**
-```regex
-send\s+money\s+Tk\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?).*?\bto\s*(?P<sender>(?:\+?88)?01[3-9]\d{8}).*?(?:Trx\s*ID|Txn\s*ID|TrxID|TxnID|Transaction\s+ID)\s*:?\s*(?P<trx_id>[A-Za-z0-9]{6,24})
-```
-**Nagad**
-```regex
-money\s+received\s*(?:amount)?\s*:?\s*Tk\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?).*?Sender\s*:?\s*(?P<sender>(?:\+?88)?01[3-9]\d{8}).*?(?:Trx\s*ID|Txn\s*ID|TrxID|TxnID|Transaction\s+ID)\s*:?\s*(?P<trx_id>[A-Za-z0-9]{6,24})
-```
-**Rocket (DBBL)**
-```regex
-rocket\s+account\s+(?P<sender>(?:\+?88)?01[3-9]\d{8}).*?credited\s+by\s+Tk\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?).*?(?:Trx\s*ID|Txn\s*ID|TrxID|TxnID|Transaction\s+ID)\s*:?\s*(?P<trx_id>[A-Za-z0-9]{6,24})
-```
-**Upay**
-```regex
-upay\s*:?\s*.*?received\s+Tk\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?).*?\bfrom\s*(?P<sender>(?:\+?88)?01[3-9]\d{8}).*?(?:Trx\s*ID|Txn\s*ID|TrxID|TxnID|Transaction\s+ID)\s*:?\s*(?P<trx_id>[A-Za-z0-9]{6,24})
-```
-**Tap**
-```regex
-tap\s*:?\s*Tk\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?).*?(?:received\s+from|from)\s*(?P<sender>(?:\+?88)?01[3-9]\d{8}).*?(?:Trx\s*ID|Txn\s*ID|TrxID|TxnID|Transaction\s+ID)\s*:?\s*(?P<trx_id>[A-Za-z0-9]{6,24})
+```bash
+# inside Termux, from this repo's termux/ folder:
+bash install.sh
 ```
 
-> **Provider attribution tip:** real bKash "receive" SMS has no `bKash` brand
-> token, so the engine matches keyword-anchored providers (Upay/Nagad/Rocket/
-> Tap/Meghna) first and falls back to bKash. For the highest accuracy in
-> production, bind each SIM/device to a single provider (a merchant's
-> bKash number receives bKash SMS only) — the `sender_number` of the SMS and
-> the device binding together resolve any ambiguity.
+The installer will:
+
+1. `pkg install python termux-api`
+2. copy the listener to `~/.mfs_gateway/termux_listener.py`
+3. write `~/.mfs_gateway/config.json` (chmod 600) with your **Device ID / Secret**
+   (create them first in **Admin → Devices → + Register Device**)
+4. install a `~/.termux/boot/` hook so the listener survives reboots
+   (requires the Termux:Boot app)
+
+Android housekeeping (critical for reliability):
+
+* **Settings → Apps → Termux:API → Permissions → SMS → Allow**
+* **Battery → Termux → “Unrestricted”** — otherwise Android kills the loop
+* Start listening: `termux-wake-lock && python ~/.mfs_gateway/termux_listener.py`
+
+---
+
+## 4. SMS regex reference
+
+The engine normalises everything to integer **paisa** (1 BDT = 100 paisa) and
+uppercase TrxIDs. Note: the patterns in the original brief use `[0-0,.]+`,
+which only matches the character `0` — working equivalents (comma-aware,
+decimal-aware) are below.
+
+### bKash
+```
+You have received Tk ([\d,]+(?:\.\d{1,2})?)\s*from\s*(\+?8801\d{9}|01\d{9}).*?Trx\s*ID\s*[:\-]?\s*([A-Za-z0-9\-]{6,24})
+```
+> `You have received Tk 1,500.00 from 01712345678. Fee Tk 0.00. TrxID 9HK8A2X1LM at 19/08/2026 14:30`
+
+### Nagad
+```
+(?:Amount|Amt)\s*:?\s*Tk\s*([\d,]+(?:\.\d{1,2})?).*?Sender\s*:?\s*(\+?8801\d{9}|01\d{9}).*?Txn\s*ID\s*:?\s*([A-Za-z0-9\-]{6,24})
+```
+> `Money received. Amount: Tk 2,000.00. Sender: 01812345678. TxnID: 7XQ2M1P9ZA.`
+
+Plus alternates for the *“Mr X (01XXXXXXXXX) has sent Tk … TxnID: …”* and
+*“credited with Tk …”* variants (see `backend/sms_parser.py`).
+
+### Rocket (DBBL)
+```
+(?:Cash\s*In|CashIn|Received|Credited)[^\d]{0,25}Tk\s*\.?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:from|fr)\s*(\+?8801\d{9}|01\d{9}).*?(?:Txn|Trx|Trnx|Transaction)[\s\-]*(?:ID|No)?\s*:?\s*([A-Za-z0-9\-]{6,24})
+```
+> `Cash In of Tk 750.00 from 01712345678 successful. TxnID: 8877665544.`
+
+### Upay / Tap / Meghna & generic fallback
+Receiver-side credit patterns of the same shape, plus a final generic
+`Tk <amount> … 01XXXXXXXXX … (Trx|Txn|Transaction) ID: XXXX` matcher that
+captures **any** provider as `provider: "unknown"`.
+
+**Guard rails:** messages containing `failed`, `reversed`, `debited`,
+`cash out`, `you have sent`, `payment of tk`, … are never treated as incoming
+money. All patterns run `re.IGNORECASE | re.DOTALL`.
+
+---
+
+## 5. Merchant integration
+
+All merchant calls are HMAC-signed. Canonical string:
+`"{api_key}\n{unix_timestamp}\n{raw_body}"` → headers `X-Api-Key`,
+`X-Timestamp`, `X-Signature`. Timestamp must be within ±300 s of server time.
+
+### 5.1 Create a checkout — `POST /api/v1/checkout/create`
+
+```bash
+curl -X POST https://YOUR-GATEWAY/api/v1/checkout/create \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: pk_live_..." -H "X-Timestamp: $(date +%s)" \
+  -H "X-Signature: <hex HMAC_SHA256(secret, keyId+'\n'+ts+'\n'+body)>" \
+  -d '{"order_id":"ORD-1001","amount":"250.00","currency":"BDT",
+       "customer_name":"Rahim Uddin",
+       "success_url":"https://yourshop.com/pay/success",
+       "cancel_url":"https://yourshop.com/pay/cancel",
+       "callback_url":"https://yourshop.com/api/ipn"}'
+```
+
+Response `201`:
+```json
+{ "session_id": "ps_...", "status": "pending",
+  "checkout_url": "https://YOUR-GATEWAY/checkout/ps_...",
+  "amount_paisa": 25000, "amount_bdt": "250.00", "expires_at": "..." }
+```
+Redirect the buyer to `checkout_url`. Re-creating with the same `order_id`
+returns the existing session (`idempotent_replay: true`).
+
+### 5.2 Buyer flow
+
+Buyer opens the checkout → picks bKash/Nagad/… → sends the exact amount to the
+shown gateway wallet → submits wallet number + TrxID → the gateway matches the
+incoming SMS ledger in real time (`paid` / `pending` auto-poll / clear error
+states for `amount_mismatch`, `used`, `locked`, `expired`).
+
+### 5.3 Confirm payment server-side (always do this)
+
+The buyer is redirected to your `success_url` with signed params:
+`...?status=paid&session_id=ps_...&order_id=ORD-1001&amount_paisa=25000&currency=BDT&trxid=9HK...&sig=...`
+
+`sig = hex(HMAC_SHA256(GATEWAY_SECRET, "session_id|order_id|amount_paisa|trxid"))`
+
+Verify it — and better, fetch the source of truth with your API key:
+
+`GET /api/v1/payments/{session_id}` → status, trxid, payer_wallet, paid_at.
+
+### 5.4 IPN webhook
+
+If you pass `callback_url`, the gateway POSTs
+`{"event":"payment.success", session_id, order_id, amount_paisa, provider,
+trxid, payer_wallet, paid_at, signature}` with header `X-Gateway-Signature`.
+Best-effort delivery — always reconcile with the status API.
+
+### 5.5 Device webhooks (Termux → gateway)
+
+`POST /api/v1/webhook/sms` with `X-Device-Id / X-Timestamp / X-Signature` and
+body `{provider, sender, amount_paisa, trxid, sms_timestamp, raw_hash}`.
+Duplicates return `{"status":"duplicate"}` safely.
 
 ---
 
 ## 6. Security model
 
-- **HMAC-SHA256 request signing** for both device webhooks and merchant APIs —
-  secrets are never transmitted, only digests.
-- **Replay protection**: bounded timestamps (±300 s) + single-use nonces.
-- **Constant-time** signature comparison (`hmac.compare_digest`).
-- **Password hashing** via Werkzeug (scrypt/PBKDF2) for admin/merchant logins.
-- **No secrets in the browser**: the hosted checkout uses short-lived signed
-  tokens issued server-side; merchant secrets stay server-side.
-- **Least privilege**: merchant keys can only verify payments & read their own
-  transactions; superadmin controls merchants, devices, and system state.
+| Threat | Control |
+|---|---|
+| Forged webhooks | HMAC-SHA256 per-device secret, ±300 s timestamp window, timing-safe compare |
+| TrxID replay / double-spend | `UNIQUE(trxid)` ledger + atomic `unused→consumed` claim |
+| Order replay | `UNIQUE(merchant_id, order_id)` idempotency |
+| Brute force on verify | per-session attempt cap (10) + per-IP rate limiting + session expiry (15 min) |
+| Credential storage | passwords PBKDF2-HMAC-SHA256 (210k); panel CSRF tokens; `HttpOnly` sessions |
+| Raw SMS privacy | only the SHA-256 hash of the SMS is stored/uploaded |
+| Amount drift | integer paisa throughout, no floats |
 
-### Production hardening checklist
-1. Put the gateway behind **TLS** (nginx/caddy) — never expose plain HTTP.
-2. Set a strong `SECRET_KEY`, and change all `SEED_*` credentials.
-3. Swap `backend/db.py`'s SQLite for **PostgreSQL** (schema is plain SQL; add
-   connection pooling) for multi-instance scale.
-4. Run with **gunicorn** (`gunicorn -w 4 run:app`) instead of the dev server.
-5. Rate-limit `/api/v1/checkout/verify` and `/api/v1/webhook/sms`.
-6. Register a unique device per MFS SIM; store `device_secret` off-device.
+> **Production notes.** API/device secrets are stored server-side (like Stripe
+> live secrets) so HMAC can be verified; `data/` is `0600`-permissioned and
+> git-ignored. For high-volume deployments: swap SQLite → PostgreSQL
+> (`database.py` is the only layer to port), put secrets behind KMS/Vault,
+> run behind gunicorn + TLS (Caddy/Nginx), enforce HTTPS, and rotate keys via
+> the admin panel. Prefer **Personal** wallets with unique per-order reference
+> codes if you expect same-amount collisions within minutes.
 
 ---
 
-## 7. Implementation walkthrough
+## 7. Repository layout
 
-1. **Clone & install** → `pip install -r requirements.txt`, `python run.py`.
-2. **Login** → `/admin` (superadmin) or `/dashboard` (merchant).
-3. **Add a device** (production) → generate `device_id`/`device_secret` in the
-   admin panel, plug them into `termux/config.json`.
-4. **Deploy the listener** on the phone (Section 3).
-5. **Embed the gateway** → merchant generates API keys on the dashboard, then
-   calls `POST /api/v1/checkout/verify` (HMAC) from their backend, or redirects
-   customers to `/checkout` with a signed checkout token.
-6. **Reconcile** → the superadmin panel shows every SMS log, device heartbeat,
-   and transaction with full traceability.
+```
+├── run.py                     # entry point (python run.py [--init-demo])
+├── requirements.txt
+├── backend/
+│   ├── app.py                 # routes: webhook, checkout, panels
+│   ├── database.py            # schema + seeding + helpers
+│   ├── security.py            # HMAC / PBKDF2 / keygen
+│   ├── sms_parser.py          # provider regex engine
+│   └── templates/             # checkout, admin, dashboard, auth UIs
+├── termux/
+│   ├── termux_listener.py     # Android daemon (stdlib-only)
+│   └── install.sh             # Termux bootstrap
+├── tests/test_sms_parser.py   # regex unit tests
+└── tools/demo_flow.py         # E2E simulation + merchant SDK reference
+```
+
+## 8. Configuration
+
+| Env var                  | Default                | Purpose |
+|--------------------------|------------------------|---------|
+| `PORT`                   | `8000`                 | HTTP port |
+| `GATEWAY_DB`             | `data/gateway.db`      | SQLite path |
+| `GATEWAY_SECRET`         | generated → `data/secret_key` | session + redirect/IPN signing key |
+| `GATEWAY_ADMIN_USER`     | `admin`                | first-boot superadmin |
+| `GATEWAY_ADMIN_PASSWORD` | random (printed once)  | first-boot superadmin password |
+| `GATEWAY_SERVER_URL` / `GATEWAY_DEVICE_ID` / `GATEWAY_DEVICE_SECRET` | — | Termux listener overrides |
+
+Provider wallet numbers, checkout TTL, gateway branding: **Admin → Settings**.

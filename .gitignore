@@ -1,23 +1,19 @@
+# Runtime data & secrets — never commit
+data/
+*.db
+*.db-wal
+*.db-shm
+secret_key
+
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
 .venv/
 venv/
-env/
+.pytest_cache/
+.mypy_cache/
 
-# Runtime data (secrets / local DB — never commit)
-data/
-*.db
-*.sqlite3
-*.sqlite
-
-# Secrets
-.env
-termux/config.json
-*.secret
-
-# OS / editor
+# OS / editors
 .DS_Store
 .idea/
 .vscode/
