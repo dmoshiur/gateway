@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Superadmin · MFS Gateway</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: { fontFamily: { display: ['"Space Grotesk"','sans-serif'] },
+  colors: { ink:'#05060f', neon:'#22ffe0', hot:'#e2136e' } } } };
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  body { font-family: Inter, sans-serif; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .glass { background: rgba(15,18,38,.72); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.08); }
+  .grid-bg { background-image: linear-gradient(rgba(34,255,224,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34,255,224,.05) 1px, transparent 1px); background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 100% 60% at 50% 0%, #000 25%, transparent 100%); }
+  .side-btn { transition: all .15s ease; border: 1px solid transparent; }
+  .side-btn:hover { background: rgba(34,255,224,.06); }
+  .side-btn.active { background: linear-gradient(120deg, rgba(34,255,224,.14), rgba(226,19,110,.10));
+    border-color: rgba(34,255,224,.35); color: #22ffe0; }
+  .pill-unused { background: rgba(245,158,11,.12); color: #fbbf24; border: 1px solid rgba(245,158,11,.35); }
+  .pill-consumed { background: rgba(34,255,224,.10); color: #22ffe0; border: 1px solid rgba(34,255,224,.35); }
+  .pill-flagged { background: rgba(244,63,94,.12); color: #fb7185; border: 1px solid rgba(244,63,94,.35); }
+  .pill-pending { background: rgba(148,163,184,.12); color: #cbd5e1; border: 1px solid rgba(148,163,184,.3); }
+  .pill-paid { background: rgba(34,197,94,.12); color: #4ade80; border: 1px solid rgba(34,197,94,.35); }
+  .pill-expired, .pill-cancelled { background: rgba(244,63,94,.12); color: #fb7185; border: 1px solid rgba(244,63,94,.35); }
+  .pill-active { background: rgba(34,197,94,.12); color: #4ade80; border: 1px solid rgba(34,197,94,.35); }
+  .pill-revoked, .pill-suspended { background: rgba(244,63,94,.12); color: #fb7185; border: 1px solid rgba(244,63,94,.35); }
+  .flash-row { animation: flash 1.2s ease; }
+  @keyframes flash { 0% { background: rgba(34,255,224,.18); } 100% { background: transparent; } }
+  .fade-up { animation: fadeUp .35s ease both; }
+  @keyframes fadeUp { from{opacity:0; transform:translateY(10px)} to{opacity:1; transform:none} }
+  table th { font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: #64748b; font-weight: 600; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
+  .btn-neon { background: linear-gradient(120deg, #22ffe0, #7ce7ff); color: #05060f; font-weight: 600; }
+  .btn-ghost { border: 1px solid rgba(255,255,255,.14); }
+  .btn-ghost:hover { border-color: #22ffe0; color: #22ffe0; }
+  .btn-danger { border: 1px solid rgba(244,63,94,.4); color: #fb7185; }
+  .btn-danger:hover { background: rgba(244,63,94,.12); }
+  input, select { outline: none; }
+  .modal-bg { background: rgba(3,4,12,.8); backdrop-filter: blur(6px); }
+  .live-dot { animation: pulse 1.6s ease-out infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(34,255,224,.5)} 75%{box-shadow:0 0 0 9px rgba(34,255,224,0)} 100%{box-shadow:0 0 0 0 rgba(34,255,224,0)} }
+</style>
+</head>
+<body class="bg-ink text-slate-200 min-h-screen" data-csrf="{{ csrf_token }}">
+<div class="grid-bg fixed inset-0 pointer-events-none"></div>
+<div class="fixed -top-40 -right-40 w-[480px] h-[480px] rounded-full pointer-events-none"
+     style="background: radial-gradient(circle, rgba(226,19,110,.18), transparent 65%)"></div>
+
+<div class="relative z-10 flex min-h-screen">
+  <!-- Sidebar -->
+  <aside class="w-60 shrink-0 hidden md:flex flex-col gap-1 p-4 border-r border-white/10 bg-black/30 sticky top-0 h-screen">
+    <div class="flex items-center gap-3 px-3 py-4 mb-2">
+      <div class="w-10 h-10 rounded-xl glass flex items-center justify-center text-neon font-display font-bold shadow-[0_0_24px_-6px_rgba(34,255,224,.6)]">৳</div>
+      <div>
+        <p class="font-display font-bold text-white text-sm">MFS Gateway</p>
+        <p class="text-[10px] uppercase tracking-widest text-rose-400">Superadmin</p>
+      </div>
+    </div>
+    <button class="side-btn active text-left text-sm px-4 py-2.5 rounded-xl" data-tab="overview" onclick="showTab('overview')">📊 Overview</button>
+    <button class="side-btn text-left text-sm px-4 py-2.5 rounded-xl" data-tab="sms" onclick="showTab('sms')">📩 SMS Logs</button>
+    <button class="side-btn text-left text-sm px-4 py-2.5 rounded-xl" data-tab="sessions" onclick="showTab('sessions')">💳 Payment Sessions</button>
+    <button class="side-btn text-left text-sm px-4 py-2.5 rounded-xl" data-tab="merchants" onclick="showTab('merchants')">🏪 Merchants</button>
+    <button class="side-btn text-left text-sm px-4 py-2.5 rounded-xl" data-tab="devices" onclick="showTab('devices')">📱 Devices</button>
+    <button class="side-btn text-left text-sm px-4 py-2.5 rounded-xl" data-tab="keys" onclick="showTab('keys')">🔑 API Keys</button>
+    <button class="side-btn text-left text-sm px-4 py-2.5 rounded-xl" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+    <button class="side-btn text-left text-sm px-4 py-2.5 rounded-xl" data-tab="audit" onclick="showTab('audit')">🧾 Audit Log</button>
+    <div class="mt-auto">
+      <a href="/" class="block text-center text-xs text-slate-500 hover:text-neon py-2">← Gateway home</a>
+      <a href="/admin/logout" class="block text-center text-xs text-rose-400/80 hover:text-rose-300 py-2 border-t border-white/10">Sign out</a>
+    </div>
+  </aside>
+
+  <!-- Content -->
+  <main class="flex-1 p-4 sm:p-8 max-w-6xl mx-auto w-full">
+    <div class="md:hidden flex items-center justify-between mb-4 glass rounded-2xl px-4 py-3">
+      <p class="font-display font-bold text-white">MFS Gateway · Admin</p>
+      <select onchange="showTab(this.value)" class="bg-black/40 border border-white/10 rounded-lg text-sm px-2 py-1.5">
+        <option value="overview">Overview</option><option value="sms">SMS Logs</option>
+        <option value="sessions">Sessions</option><option value="merchants">Merchants</option>
+        <option value="devices">Devices</option><option value="keys">API Keys</option>
+        <option value="settings">Settings</option><option value="audit">Audit</option>
+      </select>
+    </div>
+
+    <!-- OVERVIEW -->
+    <section id="tab-overview">
+      <div class="flex items-center gap-3 mb-5">
+        <h1 class="font-display text-2xl font-bold text-white">Command Center</h1>
+        <span class="flex items-center gap-1.5 text-[11px] text-neon"><span class="w-2 h-2 rounded-full bg-neon live-dot"></span>LIVE</span>
+      </div>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6" id="statCards"></div>
+      <div class="grid lg:grid-cols-2 gap-4">
+        <div class="glass rounded-2xl p-5">
+          <h3 class="font-display font-semibold text-white text-sm mb-3">📩 Latest SMS Captures</h3>
+          <div id="recentSms" class="space-y-2 text-xs"></div>
+        </div>
+        <div class="glass rounded-2xl p-5">
+          <h3 class="font-display font-semibold text-white text-sm mb-3">💸 Latest Verified Payments</h3>
+          <div id="recentPaid" class="space-y-2 text-xs"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SMS LOGS -->
+    <section id="tab-sms" class="hidden">
+      <h1 class="font-display text-2xl font-bold text-white mb-5">SMS Transaction Logs</h1>
+      <div class="glass rounded-2xl p-4 mb-4 flex flex-wrap items-end gap-3">
+        <div>
+          <label class="text-[10px] uppercase tracking-widest text-slate-500">Provider</label>
+          <select id="inj_provider" class="block mt-1 bg-black/40 border border-white/10 rounded-lg text-sm px-3 py-2">
+            <option>bkash</option><option>nagad</option><option>rocket</option>
+            <option>upay</option><option>tap</option><option>meghna</option>
+          </select>
+        </div>
+        <div><label class="text-[10px] uppercase tracking-widest text-slate-500">Sender</label>
+          <input id="inj_sender" value="01711222333" class="block mt-1 bg-black/40 border border-white/10 rounded-lg text-sm px-3 py-2 mono w-36"></div>
+        <div><label class="text-[10px] uppercase tracking-widest text-slate-500">Amount (BDT)</label>
+          <input id="inj_amount" value="250.00" class="block mt-1 bg-black/40 border border-white/10 rounded-lg text-sm px-3 py-2 mono w-28"></div>
+        <div><label class="text-[10px] uppercase tracking-widest text-slate-500">TrxID</label>
+          <input id="inj_trxid" class="block mt-1 bg-black/40 border border-white/10 rounded-lg text-sm px-3 py-2 mono w-40 uppercase"></div>
+        <button onclick="randomTrx()" class="btn-ghost text-xs px-3 py-2 rounded-lg">🎲</button>
+        <button onclick="injectSms()" class="btn-neon text-xs px-4 py-2 rounded-lg">⚡ Inject Test SMS</button>
+        <p class="text-[11px] text-slate-500 w-full">Simulates an incoming Termux webhook without a phone — perfect for end-to-end checkout tests.</p>
+      </div>
+      <div class="glass rounded-2xl overflow-hidden">
+        <div class="overflow-x-auto"><table class="w-full text-xs">
+          <thead><tr class="border-b border-white/10">
+            <th class="text-left px-4 py-3">#</th><th class="text-left px-4 py-3">Provider</th>
+            <th class="text-left px-4 py-3">Sender</th><th class="text-right px-4 py-3">Amount</th>
+            <th class="text-left px-4 py-3">TrxID</th><th class="text-left px-4 py-3">Device</th>
+            <th class="text-left px-4 py-3">Status</th><th class="text-left px-4 py-3">Matched Order</th>
+            <th class="text-left px-4 py-3">Captured (UTC)</th><th class="px-4 py-3"></th>
+          </tr></thead>
+          <tbody id="smsRows"></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- SESSIONS -->
+    <section id="tab-sessions" class="hidden">
+      <h1 class="font-display text-2xl font-bold text-white mb-5">Payment Sessions</h1>
+      <div class="glass rounded-2xl overflow-hidden">
+        <div class="overflow-x-auto"><table class="w-full text-xs">
+          <thead><tr class="border-b border-white/10">
+            <th class="text-left px-4 py-3">Session / Order</th><th class="text-left px-4 py-3">Merchant</th>
+            <th class="text-right px-4 py-3">Amount</th><th class="text-left px-4 py-3">Provider</th>
+            <th class="text-left px-4 py-3">TrxID</th><th class="text-left px-4 py-3">Status</th>
+            <th class="text-left px-4 py-3">Created (UTC)</th><th class="text-left px-4 py-3">Paid (UTC)</th>
+          </tr></thead>
+          <tbody id="sessionRows"></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- MERCHANTS -->
+    <section id="tab-merchants" class="hidden">
+      <h1 class="font-display text-2xl font-bold text-white mb-5">Merchants</h1>
+      <div class="glass rounded-2xl overflow-hidden">
+        <div class="overflow-x-auto"><table class="w-full text-xs">
+          <thead><tr class="border-b border-white/10">
+            <th class="text-left px-4 py-3">ID</th><th class="text-left px-4 py-3">Business</th>
+            <th class="text-left px-4 py-3">Email</th><th class="text-left px-4 py-3">Keys</th>
+            <th class="text-right px-4 py-3">Paid Volume</th><th class="text-left px-4 py-3"># Paid</th>
+            <th class="text-left px-4 py-3">Joined</th><th class="text-left px-4 py-3">Status</th><th class="px-4 py-3"></th>
+          </tr></thead>
+          <tbody id="merchantRows"></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- DEVICES -->
+    <section id="tab-devices" class="hidden">
+      <div class="flex items-center justify-between mb-5">
+        <h1 class="font-display text-2xl font-bold text-white">Termux Devices</h1>
+        <button onclick="createDevice()" class="btn-neon text-xs px-4 py-2.5 rounded-xl">+ Register Device</button>
+      </div>
+      <div class="grid md:grid-cols-2 gap-4" id="deviceCards"></div>
+    </section>
+
+    <!-- KEYS -->
+    <section id="tab-keys" class="hidden">
+      <h1 class="font-display text-2xl font-bold text-white mb-5">All Merchant API Keys</h1>
+      <div class="glass rounded-2xl overflow-hidden">
+        <div class="overflow-x-auto"><table class="w-full text-xs">
+          <thead><tr class="border-b border-white/10">
+            <th class="text-left px-4 py-3">Key ID</th><th class="text-left px-4 py-3">Label</th>
+            <th class="text-left px-4 py-3">Merchant</th><th class="text-left px-4 py-3">Created</th>
+            <th class="text-left px-4 py-3">Last Used</th><th class="text-left px-4 py-3">Status</th><th class="px-4 py-3"></th>
+          </tr></thead>
+          <tbody id="keyRows"></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="hidden">
+      <h1 class="font-display text-2xl font-bold text-white mb-5">System Settings</h1>
+      <div class="glass rounded-2xl p-6 space-y-5 max-w-2xl">
+        <div class="grid sm:grid-cols-3 gap-4">
+          <div><label class="text-[10px] uppercase tracking-widest text-slate-500">Gateway name</label>
+            <input id="set_name" class="mt-1 w-full bg-black/40 border border-white/10 rounded-lg text-sm px-3 py-2.5"></div>
+          <div><label class="text-[10px] uppercase tracking-widest text-slate-500">Session TTL (min)</label>
+            <input id="set_ttl" type="number" min="5" max="120" class="mt-1 w-full bg-black/40 border border-white/10 rounded-lg text-sm px-3 py-2.5"></div>
+          <div><label class="text-[10px] uppercase tracking-widest text-slate-500">Max verify attempts</label>
+            <input id="set_attempts" type="number" min="3" max="50" class="mt-1 w-full bg-black/40 border border-white/10 rounded-lg text-sm px-3 py-2.5"></div>
+        </div>
+        <div>
+          <p class="text-[10px] uppercase tracking-widest text-slate-500 mb-2">Provider wallets shown at checkout</p>
+          <div class="space-y-2" id="walletEditor"></div>
+        </div>
+        <button onclick="saveSettings()" class="btn-neon text-xs px-5 py-2.5 rounded-xl">💾 Save Settings</button>
+        <p id="settingsSaved" class="hidden text-neon text-xs">Saved ✓</p>
+      </div>
+    </section>
+
+    <!-- AUDIT -->
+    <section id="tab-audit" class="hidden">
+      <h1 class="font-display text-2xl font-bold text-white mb-5">Audit Log</h1>
+      <div class="glass rounded-2xl overflow-hidden">
+        <div class="overflow-x-auto"><table class="w-full text-xs">
+          <thead><tr class="border-b border-white/10">
+            <th class="text-left px-4 py-3">Time (UTC)</th><th class="text-left px-4 py-3">Actor</th>
+            <th class="text-left px-4 py-3">Action</th><th class="text-left px-4 py-3">Details</th>
+          </tr></thead>
+          <tbody id="auditRows"></tbody>
+        </table></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Secret reveal modal (devices) -->
+<div id="secretModal" class="hidden fixed inset-0 z-50 modal-bg items-center justify-center p-6">
+  <div class="glass w-full max-w-md rounded-3xl p-6 fade-up">
+    <h3 class="font-display font-bold text-white">🔐 Device Credentials</h3>
+    <p class="text-xs text-amber-300 mt-1 mb-4">Store these now — the secret is shown only once.</p>
+    <div class="space-y-3 text-xs">
+      <div class="rounded-xl bg-black/40 border border-white/10 p-3">
+        <p class="text-slate-500 mb-1">DEVICE_ID</p>
+        <p id="devIdOut" class="mono text-neon break-all"></p>
+      </div>
+      <div class="rounded-xl bg-black/40 border border-white/10 p-3">
+        <p class="text-slate-500 mb-1">DEVICE_SECRET</p>
+        <p id="devSecretOut" class="mono text-neon break-all"></p>
+      </div>
+      <button onclick="copyCreds()" class="btn-ghost w-full text-xs py-2.5 rounded-xl">📋 Copy Termux config</button>
+    </div>
+    <button onclick="el('secretModal').classList.add('hidden');el('secretModal').classList.remove('flex')"
+            class="mt-4 w-full text-xs text-slate-400 hover:text-white py-2">Close</button>
+  </div>
+</div>
+
+{% raw %}
+<script>
+const CSRF = document.body.dataset.csrf;
+function el(id){ return document.getElementById(id); }
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+let currentTab = 'overview';
+let lastSmsId = 0;
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF }, opts.headers || {});
+  const res = await fetch(path, opts);
+  if (res.status === 401) { location.href = '/admin/login'; throw new Error('unauthorized'); }
+  return res.json();
+}
+
+function showTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.side-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('main section').forEach(s => s.classList.toggle('hidden', s.id !== 'tab-' + tab));
+  refresh(true);
+}
+function pill(cls, text){ return `<span class="pill-${cls} text-[10px] font-semibold px-2 py-1 rounded-lg uppercase tracking-wider">${esc(text)}</span>`; }
+
+const PROVIDER_COLORS = { bkash:'#e2136e', nagad:'#f6921e', rocket:'#8c3494', upay:'#ffd400', tap:'#00c9a7', meghna:'#ff5e5e' };
+function provBadge(p){ const c = PROVIDER_COLORS[p] || '#22ffe0';
+  return `<span class="font-semibold" style="color:${c}">${esc(p)}</span>`; }
+
+async function loadOverview() {
+  const d = await api('/admin/api/summary');
+  el('statCards').innerHTML = [
+    ['Today volume', '৳' + d.today_volume, `${d.today_count} payments`, '#22ffe0'],
+    ['All-time volume', '৳' + d.total_volume, `${d.total_count} payments`, '#e2136e'],
+    ['SMS captured', (d.sms.unused||0) + (d.sms.consumed||0), `${d.sms.unused||0} unused · ${d.sms.consumed||0} matched`, '#f6921e'],
+    ['Devices online', d.devices.filter(x=>x.online).length + '/' + d.devices.length, d.merchants + ' merchants', '#7c3aed'],
+  ].map(([t,v,s,c]) => `<div class="glass rounded-2xl p-4 relative overflow-hidden">
+      <div class="absolute top-0 left-0 w-full h-[2px]" style="background:linear-gradient(90deg,${c},transparent)"></div>
+      <p class="text-[10px] uppercase tracking-widest text-slate-500">${t}</p>
+      <p class="font-display text-xl font-bold text-white mt-1.5">${v}</p>
+      <p class="text-[11px] text-slate-500 mt-0.5">${s}</p></div>`).join('');
+
+  el('recentSms').innerHTML = d.recent_sms.length ? d.recent_sms.map(r =>
+    `<div class="flex items-center justify-between rounded-xl bg-white/[.03] border border-white/5 px-3 py-2.5">
+       <span>${provBadge(r.provider)} <span class="mono text-slate-300 ml-2">${esc(r.trxid)}</span></span>
+       <span class="text-slate-400">৳${esc(r.amount_bdt)}</span>${pill(r.status === 'consumed' ? 'consumed' : r.status, r.status)}
+     </div>`).join('') : '<p class="text-slate-500">No SMS captured yet.</p>';
+
+  el('recentPaid').innerHTML = d.recent_paid.length ? d.recent_paid.map(r =>
+    `<div class="flex items-center justify-between rounded-xl bg-white/[.03] border border-white/5 px-3 py-2.5">
+       <span class="text-slate-300">${esc(r.merchant)} <span class="mono text-slate-500 ml-1">${esc(r.order_id)}</span></span>
+       <span class="text-neon">৳${esc(r.amount_bdt)}</span>${provBadge(r.provider)}
+     </div>`).join('') : '<p class="text-slate-500">No verified payments yet.</p>';
+}
+
+async function loadSms(intel) {
+  const d = await api('/admin/api/transactions?since_id=' + (intel ? lastSmsId : 0));
+  const rows = d.sms;
+  if (rows.length) lastSmsId = Math.max(lastSmsId, ...rows.map(r => r.id));
+  el('smsRows').innerHTML = rows.map(r => `
+    <tr class="border-b border-white/5 hover:bg-white/[.02]">
+      <td class="px-4 py-3 text-slate-500">${r.id}</td>
+      <td class="px-4 py-3">${provBadge(r.provider)}</td>
+      <td class="px-4 py-3 mono text-slate-300">${esc(r.sender)}</td>
+      <td class="px-4 py-3 text-right mono text-white">৳${esc(r.amount_bdt)}</td>
+      <td class="px-4 py-3 mono text-neon">${esc(r.trxid)}</td>
+      <td class="px-4 py-3 text-slate-400">${esc(r.device_id || '')}</td>
+      <td class="px-4 py-3">${pill(r.status, r.status)}</td>
+      <td class="px-4 py-3 mono text-slate-400">${esc(r.order_id || '—')}</td>
+      <td class="px-4 py-3 text-slate-500">${esc((r.created_at||'').replace('T',' ').slice(0,19))}</td>
+      <td class="px-4 py-3 text-right">${r.status === 'consumed'
+          ? `<button onclick="releaseSms(${r.id})" class="btn-danger text-[10px] px-2.5 py-1 rounded-lg">Release</button>` : ''}</td>
+    </tr>`).join('') || '<tr><td colspan="10" class="px-4 py-8 text-center text-slate-500">No SMS captured yet — register a device or use the test injector above.</td></tr>';
+
+  el('sessionRows').innerHTML = d.sessions.map(s => `
+    <tr class="border-b border-white/5 hover:bg-white/[.02]">
+      <td class="px-4 py-3"><span class="mono text-slate-300">${esc(s.order_id)}</span><br><span class="mono text-[10px] text-slate-600">${esc(s.id)}</span></td>
+      <td class="px-4 py-3 text-slate-300">${esc(s.merchant)}</td>
+      <td class="px-4 py-3 text-right mono text-white">৳${esc(s.amount_bdt)}</td>
+      <td class="px-4 py-3">${s.provider ? provBadge(s.provider) : '<span class="text-slate-600">—</span>'}</td>
+      <td class="px-4 py-3 mono text-neon">${esc(s.trxid || '—')}</td>
+      <td class="px-4 py-3">${pill(s.status, s.status)}</td>
+      <td class="px-4 py-3 text-slate-500">${esc((s.created_at||'').replace('T',' ').slice(0,19))}</td>
+      <td class="px-4 py-3 text-slate-500">${esc((s.paid_at||'—').replace('T',' ').slice(0,19))}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="px-4 py-8 text-center text-slate-500">No payment sessions yet.</td></tr>';
+}
+
+async function loadMerchants() {
+  const d = await api('/admin/api/merchants');
+  el('merchantRows').innerHTML = d.merchants.map(m => `
+    <tr class="border-b border-white/5 hover:bg-white/[.02]">
+      <td class="px-4 py-3 text-slate-500">${m.id}</td>
+      <td class="px-4 py-3 text-white font-medium">${esc(m.name)}</td>
+      <td class="px-4 py-3 text-slate-400">${esc(m.email)}</td>
+      <td class="px-4 py-3 text-slate-400">${m.keys}</td>
+      <td class="px-4 py-3 text-right mono text-neon">৳${esc(m.volume_bdt)}</td>
+      <td class="px-4 py-3 text-slate-400">${m.paid_count}</td>
+      <td class="px-4 py-3 text-slate-500">${esc((m.created_at||'').slice(0,10))}</td>
+      <td class="px-4 py-3">${pill(m.status, m.status)}</td>
+      <td class="px-4 py-3 text-right">
+        <button onclick="toggleMerchant(${m.id}, '${m.status === 'active' ? 'suspended' : 'active'}')"
+          class="${m.status === 'active' ? 'btn-danger' : 'btn-ghost'} text-[10px] px-2.5 py-1 rounded-lg">
+          ${m.status === 'active' ? 'Suspend' : 'Activate'}</button></td>
+    </tr>`).join('') || '<tr><td colspan="9" class="px-4 py-8 text-center text-slate-500">No merchants yet.</td></tr>';
+}
+
+async function loadDevices() {
+  const d = await api('/admin/api/devices');
+  el('deviceCards').innerHTML = d.devices.map(x => `
+    <div class="glass rounded-2xl p-5">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span class="w-2.5 h-2.5 rounded-full ${x.last_seen_at ? 'bg-neon live-dot' : 'bg-slate-600'}"></span>
+          <div><p class="font-semibold text-white text-sm">${esc(x.name)}</p>
+               <p class="mono text-[11px] text-slate-500">${esc(x.device_id)}</p></div>
+        </div>
+        ${pill(x.status, x.status)}
+      </div>
+      <p class="text-[11px] text-slate-500 mt-3">Last seen: <span class="text-slate-300">${esc((x.last_seen_at || 'never').replace('T',' ').slice(0,19))} UTC</span></p>
+      <div class="mt-3 flex gap-2">
+        <button onclick="toggleDevice('${x.device_id}', '${x.status === 'active' ? 'revoked' : 'active'}')"
+          class="${x.status === 'active' ? 'btn-danger' : 'btn-ghost'} text-[10px] px-3 py-1.5 rounded-lg">
+          ${x.status === 'active' ? 'Revoke' : 'Re-activate'}</button>
+      </div>
+    </div>`).join('') || '<p class="text-slate-500 text-sm col-span-full glass rounded-2xl p-6 text-center">No devices registered. Click “+ Register Device”, then paste the credentials into termux_listener.py on your phone.</p>';
+}
+
+async function loadKeys() {
+  const d = await api('/admin/api/keys');
+  el('keyRows').innerHTML = d.keys.map(k => `
+    <tr class="border-b border-white/5 hover:bg-white/[.02]">
+      <td class="px-4 py-3 mono text-slate-300">${esc(k.key_id)}</td>
+      <td class="px-4 py-3 text-slate-400">${esc(k.label)}</td>
+      <td class="px-4 py-3 text-slate-300">${esc(k.merchant_name)}<br><span class="text-slate-600">${esc(k.merchant_email)}</span></td>
+      <td class="px-4 py-3 text-slate-500">${esc((k.created_at||'').slice(0,10))}</td>
+      <td class="px-4 py-3 text-slate-500">${esc((k.last_used_at||'never').replace('T',' ').slice(0,19))}</td>
+      <td class="px-4 py-3">${pill(k.status, k.status)}</td>
+      <td class="px-4 py-3 text-right">${k.status === 'active'
+          ? `<button onclick="revokeKey(${k.id})" class="btn-danger text-[10px] px-2.5 py-1 rounded-lg">Revoke</button>` : ''}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No API keys generated yet.</td></tr>';
+}
+
+async function loadSettings() {
+  const d = await api('/admin/api/settings');
+  el('set_name').value = d.gateway_name || 'MFS Gateway';
+  el('set_ttl').value = d.session_ttl_minutes || '15';
+  el('set_attempts').value = d.max_verify_attempts || '10';
+  let wallets = {}; try { wallets = JSON.parse(d.provider_wallets || '{}'); } catch(e) {}
+  el('walletEditor').innerHTML = Object.entries(wallets).map(([name, cfg]) => `
+    <div class="flex flex-wrap items-center gap-3 rounded-xl bg-black/30 border border-white/10 px-4 py-3">
+      <span class="w-20 font-semibold text-sm" style="color:${PROVIDER_COLORS[name]||'#22ffe0'}">${esc(name)}</span>
+      <input data-w="${name}" data-f="number" value="${esc(cfg.number)}" class="mono text-xs bg-black/40 border border-white/10 rounded-lg px-3 py-2 w-40">
+      <select data-w="${name}" data-f="type" class="text-xs bg-black/40 border border-white/10 rounded-lg px-2 py-2">
+        <option ${cfg.type === 'Personal' ? 'selected' : ''}>Personal</option>
+        <option ${cfg.type === 'Agent' ? 'selected' : ''}>Agent</option>
+      </select>
+      <label class="flex items-center gap-1.5 text-xs text-slate-400">
+        <input type="checkbox" data-w="${name}" data-f="enabled" ${cfg.enabled ? 'checked' : ''} class="accent-[#22ffe0]"> enabled</label>
+    </div>`).join('');
+}
+
+async function loadAudit() {
+  const d = await api('/admin/api/audit');
+  el('auditRows').innerHTML = d.logs.map(l => `
+    <tr class="border-b border-white/5">
+      <td class="px-4 py-2.5 text-slate-500 mono">${esc((l.created_at||'').replace('T',' ').slice(0,19))}</td>
+      <td class="px-4 py-2.5 mono text-cyan-300">${esc(l.actor)}</td>
+      <td class="px-4 py-2.5 text-slate-200">${esc(l.action)}</td>
+      <td class="px-4 py-2.5 text-slate-400">${esc(l.meta)}</td>
+    </tr>`).join('') || '<tr><td colspan="4" class="px-4 py-8 text-center text-slate-500">Empty.</td></tr>';
+}
+
+function refresh(full) {
+  if (currentTab === 'overview') loadOverview();
+  else if (currentTab === 'sms' || currentTab === 'sessions') loadSms(true);
+  else if (currentTab === 'merchants') loadMerchants();
+  else if (currentTab === 'devices') loadDevices();
+  else if (currentTab === 'keys') loadKeys();
+  else if (currentTab === 'settings' && full) loadSettings();
+  else if (currentTab === 'audit') loadAudit();
+}
+
+async function toggleMerchant(id, status){ await api(`/admin/api/merchants/${id}/status`, { method:'POST', body: JSON.stringify({status}) }); loadMerchants(); }
+async function toggleDevice(id, status){ await api(`/admin/api/devices/${id}/status`, { method:'POST', body: JSON.stringify({status}) }); loadDevices(); }
+async function revokeKey(id){ if (confirm('Revoke this API key?')) { await api(`/admin/api/keys/${id}/revoke`, { method:'POST', body:'{}' }); loadKeys(); } }
+async function releaseSms(id){ if (confirm('Release this SMS back to “unused”? Its matched order returns to pending.')) { await api(`/admin/api/transactions/${id}/release`, { method:'POST', body:'{}' }); loadSms(true); } }
+
+async function createDevice() {
+  const name = prompt('Device label (e.g. "Shop Phone 01"):', 'Termux Phone');
+  if (name === null) return;
+  const d = await api('/admin/api/devices', { method:'POST', body: JSON.stringify({ name }) });
+  el('devIdOut').textContent = d.device_id; el('devSecretOut').textContent = d.secret;
+  el('secretModal').classList.remove('hidden'); el('secretModal').classList.add('flex');
+  loadDevices();
+}
+function copyCreds() {
+  const t = `DEVICE_ID=${el('devIdOut').textContent}\nDEVICE_SECRET=${el('devSecretOut').textContent}`;
+  navigator.clipboard?.writeText(t);
+}
+
+function randomTrx(){ el('inj_trxid').value = Array.from({length:10}, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ123456789'[Math.floor(Math.random()*33)]).join(''); }
+async function injectSms() {
+  if (!el('inj_trxid').value) randomTrx();
+  const d = await api('/admin/api/sms/inject', { method:'POST', body: JSON.stringify({
+    provider: el('inj_provider').value, sender: el('inj_sender').value,
+    amount: el('inj_amount').value, trxid: el('inj_trxid').value })
+  });
+  if (d.error) alert('⚠ ' + d.error);
+  el('inj_trxid').value = ''; loadSms(true);
+}
+
+async function saveSettings() {
+  const wallets = {};
+  el('walletEditor').querySelectorAll('[data-w]').forEach(inp => {
+    const w = inp.dataset.w, f = inp.dataset.f;
+    wallets[w] = wallets[w] || {};
+    wallets[w][f] = (f === 'enabled') ? inp.checked : inp.value;
+  });
+  await api('/admin/api/settings', { method:'POST', body: JSON.stringify({
+    gateway_name: el('set_name').value, session_ttl_minutes: el('set_ttl').value,
+    max_verify_attempts: el('set_attempts').value, provider_wallets: wallets }) });
+  el('settingsSaved').classList.remove('hidden');
+  setTimeout(() => el('settingsSaved').classList.add('hidden'), 1800);
+}
+
+randomTrx(); refresh(true);
+setInterval(() => { if (currentTab !== 'settings') refresh(false); }, 4000);
+</script>
+{% endraw %}
+</body>
+</html>

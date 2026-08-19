@@ -1,0 +1,19 @@
+# Runtime data & secrets — never commit
+data/
+*.db
+*.db-wal
+*.db-shm
+secret_key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
