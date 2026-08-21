@@ -130,9 +130,17 @@ class Store:
 def make_store(app) -> Store:
     backend = os.environ.get("GATEWAY_DB_BACKEND", "sqlite").strip().lower()
     if backend == "mongodb":
-        from .mongo_store import MongoStore
-        return MongoStore(
+        from . import mongo_store
+        # Dev/CI shim: run the full production MongoStore code path against an
+        # in-memory mongomock transport when no real server is reachable
+        # (e.g. restricted sandboxes). Production NEVER sets this flag.
+        if os.environ.get("GATEWAY_MONGO_MOCK") == "1":
+            import mongomock
+            mongo_store.MONGO_CLIENT_FACTORY = mongomock.MongoClient
+        store = mongo_store.MongoStore(
             uri=os.environ.get("MONGO_URI", "mongodb://localhost:27017"),
             db_name=os.environ.get("MONGO_DB", "mfs_gateway"))
+        store.mocked = os.environ.get("GATEWAY_MONGO_MOCK") == "1"
+        return store
     from .sqlite_store import SQLiteStore
     return SQLiteStore(app.config["DATABASE"])

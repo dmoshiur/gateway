@@ -100,16 +100,22 @@ pip install -r requirements.txt            # includes pymongo
 mongod --dbpath /var/lib/mongo &
 GATEWAY_DB_BACKEND=mongodb MONGO_URI=mongodb://localhost:27017 python run.py --init-demo
 
-# or MongoDB Atlas
+# or MongoDB Atlas (recommended — free M0 tier):
+#   1. cloud.mongodb.com → Create cluster → Database user + network access
+#   2. copy the mongodb+srv:// connection string into .env as MONGO_URI
 GATEWAY_DB_BACKEND=mongodb \
 MONGO_URI='mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net' \
 MONGO_DB=mfs_gateway python run.py --init-demo
 ```
 
+With a `.env` file this collapses to just `python run.py` (see `.env.example`).
+
 The Mongo backend uses unique indexes (`trxid_norm`, `merchants.email`,
 `api_keys.key_id`, compound `merchant_id+order_id`) and atomic
 `findOneAndUpdate` claims — the same replay/double-spend guarantees as
-SQLite. `GET /healthz` reports the active backend.
+SQLite. `GET /healthz` reports the active backend **and** the transport
+(`real server` vs the `GATEWAY_MONGO_MOCK=1` in-memory dev shim used where no
+mongod/Atlas is reachable, e.g. restricted sandboxes/CI).
 
 > Scaling notes: SQLite (WAL) comfortably handles single-gateway volumes;
 > choose MongoDB when you need replica-set durability, ops tooling, or
