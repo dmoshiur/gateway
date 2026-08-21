@@ -51,10 +51,20 @@
     {% if admin_hint %}
     <div class="mt-5 rounded-xl border border-cyan-400/25 bg-cyan-400/5 px-4 py-3 text-[11px] text-slate-400">
       <p class="text-cyan-300 font-semibold mb-1">🔑 Console credentials (from server env)</p>
-      <p>Username: <span class="font-mono text-slate-200 select-all">{{ admin_hint }}</span></p>
-      <p>Password: <span class="font-mono text-slate-200 select-all">{{ admin_env_password }}</span></p>
+      <p>Username: <span id="hintUser" class="font-mono text-slate-200 select-all">{{ admin_hint }}</span></p>
+      <p>Password: <span id="hintPass" class="font-mono text-slate-200 select-all">{{ admin_env_password }}</span></p>
+      <button type="button" onclick="autofillLogin()"
+              class="mt-2.5 w-full rounded-lg border border-cyan-400/40 text-cyan-300 text-[11px] font-semibold py-2 hover:bg-cyan-400/10 transition">
+        ⚡ Autofill &amp; sign in with these credentials</button>
       <p class="mt-1.5 text-slate-500">The password is synced from <span class="font-mono">GATEWAY_ADMIN_PASSWORD</span> on every server start — set that env var to change it permanently.</p>
     </div>
+    <script>
+      function autofillLogin() {
+        document.querySelector('input[name=username]').value = document.getElementById('hintUser').textContent.trim();
+        document.querySelector('input[name=password]').value = document.getElementById('hintPass').textContent.trim();
+        document.querySelector('form').submit();
+      }
+    </script>
     {% endif %}
   </div>
 </div>

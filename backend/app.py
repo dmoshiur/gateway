@@ -969,8 +969,13 @@ def create_app() -> Flask:
 
     @app.get("/healthz")
     def healthz():
-        return jsonify({"status": "ok", "time": utcnow_iso(),
-                        "backend": os.environ.get("GATEWAY_DB_BACKEND", "sqlite")})
+        backend = os.environ.get("GATEWAY_DB_BACKEND", "sqlite")
+        out = {"status": "ok", "time": utcnow_iso(), "backend": backend}
+        if backend == "mongodb":
+            out["mongo_transport"] = ("mock (dev shim)"
+                                      if os.environ.get("GATEWAY_MONGO_MOCK") == "1"
+                                      else "real server")
+        return jsonify(out)
 
     @app.errorhandler(404)
     def not_found(_e):
