@@ -11,9 +11,8 @@ Flags:
 
 Env (see .env.example for full docs):
   PORT                  default 8000
-  GATEWAY_DB_BACKEND    sqlite (default) | mongodb
-  GATEWAY_DB            SQLite path (default data/gateway.db)
-  MONGO_URI / MONGO_DB  MongoDB connection
+  MONGO_URI             single-line MongoDB connection string, db name in path
+                        (default mongodb://localhost:27017/mfs_gateway)
   GATEWAY_SECRET        Flask/session + signing secret
   GATEWAY_ADMIN_USER    superadmin username (re-synced every boot)
   GATEWAY_ADMIN_PASSWORD superadmin password (re-synced every boot)

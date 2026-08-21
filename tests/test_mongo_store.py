@@ -1,7 +1,4 @@
-"""API + security flow tests against the MongoDB backend (via mongomock).
-
-The full shared flow suite from flow_base is re-run with the Mongo store,
-proving behavioural parity between SQLite and MongoDB.
+"""Store-level contract tests for the MongoDB backend (mongomock transport).
 
 Run:  python tests/test_mongo_store.py
 """
@@ -10,30 +7,11 @@ import unittest
 
 import mongomock  # noqa: F401  (hard requirement for this module)
 
-from flow_base import (FlowsHappyPath, FlowsPanelAuth, FlowsVerificationRules,
-                       FlowsWebhookSecurity, GatewayFlows)
-
-
-class TestMongoHappyPath(FlowsHappyPath):
-    BACKEND = "mongodb"
-
-
-class TestMongoWebhookSecurity(FlowsWebhookSecurity):
-    BACKEND = "mongodb"
-
-
-class TestMongoVerificationRules(FlowsVerificationRules):
-    BACKEND = "mongodb"
-
-
-class TestMongoPanelAuth(FlowsPanelAuth):
-    BACKEND = "mongodb"
+from flow_base import GatewayFlows
 
 
 class TestMongoStoreContract(GatewayFlows):
-    """MongoDB-specific store sanity (counters, unique indexes, atomic claims)."""
-
-    BACKEND = "mongodb"
+    """MongoDB store sanity (counters, unique indexes, atomic claims)."""
 
     def test_counters_and_uniques(self):
         store = self.app.store
@@ -57,6 +35,17 @@ class TestMongoStoreContract(GatewayFlows):
         self.assertFalse(store.claim_sms(sms["id"], "ps_m2"))
         store.release_sms(sms["id"])
         self.assertTrue(store.claim_sms(sms["id"], "ps_m3"))
+
+    def test_db_name_comes_from_uri(self):
+        from backend.store import _db_name_from_uri
+        self.assertEqual(
+            _db_name_from_uri("mongodb://localhost:27017/mfs_gateway"),
+            "mfs_gateway")
+        self.assertEqual(
+            _db_name_from_uri("mongodb+srv://u:p@cluster0.x.mongodb.net/my_shop"),
+            "my_shop")
+        self.assertEqual(_db_name_from_uri("mongodb://localhost:27017"),
+                         "mfs_gateway")  # default when no path segment
 
 
 if __name__ == "__main__":

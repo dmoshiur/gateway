@@ -12,7 +12,7 @@ no aggregator contracts, no per-transaction middleman fees.
                                                         │ HMAC-signed POST
                                                         ▼
 ┌──────────────────┐   checkout_url   ┌───────────────────────────────┐
-│  Merchant Shop   │ ◀─────────────── │ Central Gateway (Flask+SQLite) │
+│  Merchant Shop   │ ◀─────────────── │ Central Gateway (Flask+MongoDB) │
 │  (your app)      │                  │  • SMS ledger + TrxID matcher  │
 └──────┬───────────┘                  │  • Admin + Merchant consoles   │
        │ buyer pays, submits TrxID    │  • IPN webhooks                │
@@ -50,11 +50,11 @@ python tools/demo_flow.py
 | Landing page       | `/`                        | —                                           |
 | Demo credentials   | `data/demo_credentials.json` | merchant API key pair + Termux device secret |
 
-Run the test suites (parser + full API/security flows on **both** SQLite and
-MongoDB-via-mongomock):
+Run the test suites (parser + full API/security flows on the MongoDB store,
+using the in-memory transport — no mongod needed in CI):
 
 ```bash
-cd tests && python -m unittest discover -s . -p "test_*.py"   # 65 tests
+cd tests && python -m unittest discover -s . -p "test_*.py"
 python tests/test_sms_parser.py
 python termux/termux_listener.py --test \
   "You have received Tk 1,500.00 from 01712345678. TrxID 9HK8A2X1LM at 19/08/2026 14:30"
@@ -86,41 +86,36 @@ receives MFS balance-update SMS:
 | Module                | Responsibility |
 |-----------------------|----------------|
 | `app.py`              | All HTTP routes, auth decorators, rate limiting, IPN dispatch |
-| `store/`              | **Pluggable persistence layer** — `SQLiteStore` (default, zero-infra) or `MongoStore` (`pymongo`), identical document semantics, interchangeable via one env var |
+| `store/`              | **MongoDB persistence layer** — `MongoStore` (pymongo), configured by one single-line `MONGO_URI`; unique-index guaranteed replay/double-spend protection |
 | `sms_parser.py`       | Regex engine (mirrored in the listener) |
 | `security.py`         | HMAC signing/verify, PBKDF2 passwords, key generation |
 | `demo.py`             | Deterministic demo seeding |
 
-**Choosing MongoDB (GATEWAY_DB_BACKEND=mongodb):**
+**Database = MongoDB only.** One single-line connection string is the whole
+database config — the database name lives in the URI path:
 
 ```bash
-pip install -r requirements.txt            # includes pymongo
+# .env (or shell env) — pick ONE line:
+MONGO_URI=mongodb://localhost:27017/mfs_gateway
+MONGO_URI=mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/mfs_gateway   # Atlas
 
-# local mongod
-mongod --dbpath /var/lib/mongo &
-GATEWAY_DB_BACKEND=mongodb MONGO_URI=mongodb://localhost:27017 python run.py --init-demo
-
-# or MongoDB Atlas (recommended — free M0 tier):
-#   1. cloud.mongodb.com → Create cluster → Database user + network access
-#   2. copy the mongodb+srv:// connection string into .env as MONGO_URI
-GATEWAY_DB_BACKEND=mongodb \
-MONGO_URI='mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net' \
-MONGO_DB=mfs_gateway python run.py --init-demo
+python run.py --init-demo     # no other flags needed
 ```
 
-With a `.env` file this collapses to just `python run.py` (see `.env.example`).
+Atlas (free M0 tier): cloud.mongodb.com → Create cluster → Database user +
+network access → copy the `mongodb+srv://` string into `MONGO_URI`. Local:
+`mongod --dbpath /var/lib/mongo &`.
 
-The Mongo backend uses unique indexes (`trxid_norm`, `merchants.email`,
+The store uses unique indexes (`trxid_norm`, `merchants.email`,
 `api_keys.key_id`, compound `merchant_id+order_id`) and atomic
-`findOneAndUpdate` claims — the same replay/double-spend guarantees as
-SQLite. `GET /healthz` reports the active backend **and** the transport
-(`real server` vs the `GATEWAY_MONGO_MOCK=1` in-memory dev shim used where no
-mongod/Atlas is reachable, e.g. restricted sandboxes/CI).
+`findOneAndUpdate` claims for replay/double-spend protection. `GET /healthz`
+reports the backend, database and transport (`real server` — or the
+`GATEWAY_MONGO_MOCK=1` in-memory dev shim for CI/restricted sandboxes).
 
-> Scaling notes: SQLite (WAL) comfortably handles single-gateway volumes;
-> choose MongoDB when you need replica-set durability, ops tooling, or
-> horizontal sharding of the SMS ledger. Both backends pass the identical
-> 60+ test flow suite (`tests/`).
+> Scaling notes: replica sets give durability/read scaling out of the box;
+> the SMS ledger shards cleanly on `trxid_norm` if you ever outgrow one
+> cluster. The entire store is covered by the 60+ test flow suite (`tests/`,
+> running on the in-memory transport by default).
 
 **Payment ledger model** — webhook facts and checkout sessions are separate
 tables joined at verification time:
@@ -289,12 +284,11 @@ Duplicates return `{"status":"duplicate"}` safely.
 
 > **Production notes.** API/device secrets are stored server-side (like Stripe
 > live secrets) so HMAC can be verified; `data/` is `0600`-permissioned and
-> git-ignored. For high-volume deployments: swap SQLite → PostgreSQL
-> (`backend/store/` is the only layer to swap — MongoDB support already
-> ships; PostgreSQL would be a third backend behind the same interface), put secrets behind KMS/Vault,
-> run behind gunicorn + TLS (Caddy/Nginx), enforce HTTPS, and rotate keys via
-> the admin panel. Prefer **Personal** wallets with unique per-order reference
-> codes if you expect same-amount collisions within minutes.
+> git-ignored. For real deployments: put secrets behind KMS/Vault, run behind
+> gunicorn + TLS (Caddy/Nginx), enforce HTTPS, use a replica-set MongoDB
+> URI, and rotate keys via the admin panel. Prefer **Personal** wallets with
+> unique per-order reference codes if you expect same-amount collisions
+> within minutes.
 
 ---
 
@@ -306,9 +300,9 @@ Duplicates return `{"status":"duplicate"}` safely.
 ├── backend/
 │   ├── app.py                 # routes: webhook, checkout, panels
 │   ├── store/
-│   │   ├── __init__.py        # store contract + backend factory
-│   │   ├── sqlite_store.py    # default single-file backend
-│   │   └── mongo_store.py     # MongoDB backend (pymongo)
+│   │   ├── __init__.py        # store contract + MongoDB factory (single-line MONGO_URI)
+│   │   ├── mongo_store.py     # MongoDB backend (pymongo)
+│   │   └── seeding.py         # deterministic superadmin seeding
 │   ├── demo.py                # deterministic demo seeding
 │   ├── security.py            # HMAC / PBKDF2 / keygen
 │   ├── sms_parser.py          # provider regex engine
@@ -319,8 +313,8 @@ Duplicates return `{"status":"duplicate"}` safely.
 ├── tests/
 │   ├── test_sms_parser.py     # regex unit tests
 │   ├── flow_base.py           # shared API/security flow suite
-│   ├── test_api_flows.py      #   → run against SQLite
-│   └── test_mongo_store.py    #   → run against MongoDB (mongomock)
+│   ├── test_api_flows.py      # API/security flows (MongoDB store)
+│   └── test_mongo_store.py    # store-level contracts (indexes, claims, URI parsing)
 └── tools/demo_flow.py         # E2E simulation + merchant SDK reference
 ```
 
@@ -333,10 +327,8 @@ it's git-ignored); variables already set in the shell always win over `.env`.
 | Env var                  | Default                | Purpose |
 |--------------------------|------------------------|---------|
 | `PORT`                   | `8000`                 | HTTP port |
-| `GATEWAY_DB_BACKEND`     | `sqlite`               | `sqlite` or `mongodb` |
-| `GATEWAY_DB`             | `data/gateway.db`      | SQLite path (sqlite backend) |
-| `MONGO_URI`              | `mongodb://localhost:27017` | MongoDB connection string |
-| `MONGO_DB`               | `mfs_gateway`          | MongoDB database name |
+| `MONGO_URI`              | `mongodb://localhost:27017/mfs_gateway` | **The only DB config** — single-line MongoDB string; db name in URI path |
+| `GATEWAY_MONGO_MOCK`     | —                      | `1` = in-memory transport (CI/sandbox shim only) |
 | `GATEWAY_SECRET`         | generated → `data/secret_key` | session + redirect/IPN signing key |
 | `GATEWAY_ADMIN_USER`     | `admin`                | superadmin username (created/synced at boot) |
 | `GATEWAY_ADMIN_PASSWORD` | random (printed once)  | superadmin password — **re-synced every boot** |

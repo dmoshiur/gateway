@@ -1,20 +1,19 @@
-"""MongoDB backend (pymongo) — same document semantics as the SQLite store.
+"""MongoDB backend (pymongo) — the gateway's only storage engine.
 
-Production:  GATEWAY_DB_BACKEND=mongodb MONGO_URI=mongodb://host:27017
-Tests:       MONGO_CLIENT_FACTORY is patched with mongomock.MongoClient.
+Production:  MONGO_URI=mongodb+srv://user:pass@cluster.../mfs_gateway
+Single line: database name comes from the URI path (default: mfs_gateway).
+Dev/CI:      GATEWAY_MONGO_MOCK=1 patches MONGO_CLIENT_FACTORY to mongomock.
 """
 
 from __future__ import annotations
-
-import os
 
 from pymongo import ASCENDING, DESCENDING, MongoClient, ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from . import DEFAULT_SETTINGS, DuplicateError, Store, utcnow_iso
-from .sqlite_store import _seed_admin
+from .seeding import seed_admin
 
-# Tests may patch this with mongomock.MongoClient.
+# Tests/dev shim may patch this with mongomock.MongoClient.
 MONGO_CLIENT_FACTORY = MongoClient
 
 _LABELLED_KEY_FIELDS = {
@@ -24,8 +23,12 @@ _LABELLED_KEY_FIELDS = {
 
 
 class MongoStore(Store):
-    def __init__(self, uri: str, db_name: str = "mfs_gateway"):
-        self.client = MONGO_CLIENT_FACTORY(uri)
+    def __init__(self, uri: str, db_name: str = "mfs_gateway", mocked: bool = False):
+        self.mocked = mocked
+        self.uri = uri
+        self.db_name = db_name
+        kwargs = {} if mocked else {"serverSelectionTimeoutMS": 8000}
+        self.client = MONGO_CLIENT_FACTORY(uri, **kwargs)
         self.db = self.client[db_name]
 
     # ------------------------------------------------------------------ util
@@ -65,7 +68,7 @@ class MongoStore(Store):
         for key, value in DEFAULT_SETTINGS.items():
             db.settings.update_one({"_id": key}, {"$setOnInsert": {"value": value}},
                                    upsert=True)
-        _seed_admin(self, app)
+        seed_admin(self, app)
 
     # -------------------------------------------------------- settings/audit
     def get_setting(self, key, default=""):
