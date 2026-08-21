@@ -1,7 +1,7 @@
 """
 Automated MFS Payment Gateway — central backend.
 
-Flask + pluggable store (SQLite default, MongoDB via GATEWAY_DB_BACKEND=mongodb).
+Flask + MongoDB (pymongo store layer). Single-line DB config: MONGO_URI.
 Money is integer paisa everywhere; timestamps are UTC ISO-8601.
 
 Public / device API
@@ -102,8 +102,6 @@ def create_app() -> Flask:
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     data_dir = os.environ.get("GATEWAY_DATA_DIR", os.path.join(root, "data"))
     os.makedirs(data_dir, exist_ok=True)
-    app.config["DATABASE"] = os.environ.get(
-        "GATEWAY_DB", os.path.join(data_dir, "gateway.db"))
 
     # Secret key: env override, otherwise generated once and persisted.
     env_secret = os.environ.get("GATEWAY_SECRET")
@@ -122,8 +120,8 @@ def create_app() -> Flask:
 
     app.permanent_session_lifetime = timedelta(hours=12)
 
-    # Persistence backend (SQLite or MongoDB). Handles schema/indexes,
-    # default settings and deterministic superadmin on init.
+    # MongoDB store. Handles indexes, default settings and deterministic
+    # superadmin on init. Single-line config: MONGO_URI.
     app.store = make_store(app)
     app.store.init(app)
 
@@ -969,13 +967,13 @@ def create_app() -> Flask:
 
     @app.get("/healthz")
     def healthz():
-        backend = os.environ.get("GATEWAY_DB_BACKEND", "sqlite")
-        out = {"status": "ok", "time": utcnow_iso(), "backend": backend}
-        if backend == "mongodb":
-            out["mongo_transport"] = ("mock (dev shim)"
-                                      if os.environ.get("GATEWAY_MONGO_MOCK") == "1"
-                                      else "real server")
-        return jsonify(out)
+        return jsonify({
+            "status": "ok", "time": utcnow_iso(),
+            "backend": "mongodb",
+            "mongo_db": getattr(app.store, "db_name", "mfs_gateway"),
+            "mongo_transport": ("mock (dev shim)" if getattr(app.store, "mocked", False)
+                                else "real server"),
+        })
 
     @app.errorhandler(404)
     def not_found(_e):

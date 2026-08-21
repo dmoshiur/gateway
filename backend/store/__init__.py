@@ -1,18 +1,15 @@
 """
-Pluggable persistence layer for the gateway.
+MongoDB persistence layer for the gateway.
 
-The app speaks to a document-style store interface (plain dicts in/out).
-Two interchangeable backends:
+The app speaks to a document-style store interface (plain dicts in/out),
+implemented by ``MongoStore`` (pymongo). MongoDB is the **only** storage
+engine — configured with one single-line connection URI:
 
-  * ``SQLiteStore``  — default, zero-infrastructure single-file DB
-  * ``MongoStore``   — MongoDB via pymongo (``GATEWAY_DB_BACKEND=mongodb``)
+  MONGO_URI=mongodb://localhost:27017/mfs_gateway
+  MONGO_URI=mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/mfs_gateway
 
-Backends are selected with env vars:
-
-  GATEWAY_DB_BACKEND   "sqlite" (default) | "mongodb"
-  GATEWAY_DB           SQLite file path        (sqlite backend)
-  MONGO_URI            e.g. mongodb://user:pass@host:27017  (mongodb backend)
-  MONGO_DB             database name, default "mfs_gateway"
+The database name is embedded in the URI path (falls back to
+``mfs_gateway`` when the URI has no path segment).
 
 Money is integer paisa; timestamps are UTC ISO-8601 strings (lexicographic
 ordering matches chronological ordering for the formats we write).
@@ -49,11 +46,11 @@ DEFAULT_SETTINGS = {
 
 
 class Store:
-    """Interface contract (documented; backends subclass)."""
+    """Interface contract (documented; implemented by MongoStore)."""
 
     # --- lifecycle ---------------------------------------------------------
     def init(self, app) -> None:
-        """Create schema/indexes, seed default settings + deterministic admin."""
+        """Create indexes, seed default settings + deterministic admin."""
         raise NotImplementedError
 
     def close(self) -> None:  # pragma: no cover - trivial
@@ -127,20 +124,38 @@ class Store:
     def list_paid_recent(self, limit: int = 12) -> list: ...  # enriched
 
 
+def _db_name_from_uri(uri: str) -> str:
+    """Extract the database name embedded in a mongodb:// / mongodb+srv:// URI.
+
+    Pure string parsing — deliberately NOT pymongo.parse_uri, which performs
+    live DNS SRV lookups for mongodb+srv:// (slow/offline-hostile at boot).
+    """
+    try:
+        tail = uri.split("://", 1)[1]                 # drop scheme
+        if "/" not in tail:
+            return "mfs_gateway"
+        path = tail.split("/", 1)[1]                  # drop auth@hosts
+        name = path.split("?", 1)[0].strip("/")       # drop ?options + slashes
+        return name or "mfs_gateway"
+    except IndexError:
+        return "mfs_gateway"
+
+
 def make_store(app) -> Store:
-    backend = os.environ.get("GATEWAY_DB_BACKEND", "sqlite").strip().lower()
-    if backend == "mongodb":
-        from . import mongo_store
-        # Dev/CI shim: run the full production MongoStore code path against an
-        # in-memory mongomock transport when no real server is reachable
-        # (e.g. restricted sandboxes). Production NEVER sets this flag.
-        if os.environ.get("GATEWAY_MONGO_MOCK") == "1":
-            import mongomock
-            mongo_store.MONGO_CLIENT_FACTORY = mongomock.MongoClient
-        store = mongo_store.MongoStore(
-            uri=os.environ.get("MONGO_URI", "mongodb://localhost:27017"),
-            db_name=os.environ.get("MONGO_DB", "mfs_gateway"))
-        store.mocked = os.environ.get("GATEWAY_MONGO_MOCK") == "1"
-        return store
-    from .sqlite_store import SQLiteStore
-    return SQLiteStore(app.config["DATABASE"])
+    """Build the MongoDB store. Single-line config: MONGO_URI.
+
+    GATEWAY_MONGO_MOCK=1 swaps the client factory to mongomock (dev/CI shim —
+    restricted sandboxes with no reachable server; never in production).
+    """
+    from . import mongo_store
+
+    mock = os.environ.get("GATEWAY_MONGO_MOCK") == "1"
+    if mock:
+        import mongomock
+        mongo_store.MONGO_CLIENT_FACTORY = mongomock.MongoClient
+
+    uri = os.environ.get("MONGO_URI",
+                         "mongodb://localhost:27017/mfs_gateway")
+    store = mongo_store.MongoStore(uri=uri, db_name=_db_name_from_uri(uri),
+                                   mocked=mock)
+    return store

@@ -1,8 +1,11 @@
-"""Shared API/security flow suite — executed once per storage backend.
+"""Shared API/security flow suite — runs against the MongoDB store.
 
-The exact same behavioural contract must hold on SQLite and MongoDB:
-webhook HMAC, idempotency, replay protection, double-spend blocking,
-amount matching, CSRF/auth walls and the full payment cycle.
+Behavioural contract pinned by these tests: webhook HMAC, idempotency,
+replay protection, double-spend blocking, amount matching, CSRF/auth walls
+and the full payment cycle.
+
+No real mongod is needed in CI: the app boots with GATEWAY_MONGO_MOCK=1
+(in-memory mongomock transport, same production MongoStore code path).
 """
 
 import hashlib
@@ -23,23 +26,16 @@ def sign(secret: str, kid: str, ts: str, body: str) -> str:
                     hashlib.sha256).hexdigest()
 
 
-def build_app(backend: str):
-    """Create an isolated app instance for the given store backend."""
-    tmp = tempfile.mkdtemp(prefix=f"gateway-test-{backend}-")
+def build_app() -> tuple:
+    """Create an isolated app instance with an isolated mock-Mongo database."""
+    tmp = tempfile.mkdtemp(prefix="gateway-test-mongo-")
     os.environ["GATEWAY_DATA_DIR"] = tmp
-    os.environ["GATEWAY_DB"] = os.path.join(tmp, "test.db")
     os.environ.setdefault("GATEWAY_ADMIN_PASSWORD", "test-admin-pass")
-
-    if backend == "mongodb":
-        import mongomock
-        from backend.store import mongo_store
-        mongo_store.MONGO_CLIENT_FACTORY = mongomock.MongoClient
-        os.environ["GATEWAY_DB_BACKEND"] = "mongodb"
-        os.environ["MONGO_URI"] = "mongodb://mocked-local/"
-        os.environ["MONGO_DB"] = "gateway_test_" + uuid.uuid4().hex[:10]
-    else:
-        os.environ["GATEWAY_DB_BACKEND"] = "sqlite"
-        os.environ.pop("MONGO_DB", None)
+    os.environ["MONGO_URI"] = ("mongodb://mocked-local/gateway_test_"
+                               + uuid.uuid4().hex[:10])
+    from backend.store import mongo_store
+    import mongomock
+    mongo_store.MONGO_CLIENT_FACTORY = mongomock.MongoClient
 
     from backend.app import create_app
     app = create_app()
@@ -49,18 +45,15 @@ def build_app(backend: str):
 
 
 class GatewayFlows(unittest.TestCase):
-    """Runs identically against both backends (subclasses pick BACKEND)."""
-
-    BACKEND = "sqlite"
+    """Base class: signed-request helpers + app/creds fixtures."""
 
     @classmethod
     def setUpClass(cls):
-        cls.app, cls.creds = build_app(cls.BACKEND)
+        cls.app, cls.creds = build_app()
 
     def setUp(self):
         self.c = self.app.test_client()
 
-    # -- signed helpers ------------------------------------------------------
     def _signed(self, method, path, payload, kid, secret, kid_hdr, ts=None):
         body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         ts = ts or str(int(time.time()))
@@ -157,7 +150,6 @@ class FlowsWebhookSecurity(GatewayFlows):
         self.assertEqual(self.push_sms("DUPTRX01").status_code, 201)
         r = self.push_sms("DUPTRX01")
         self.assertEqual((r.status_code, r.get_json()["status"]), (200, "duplicate"))
-        # stored exactly once — verified through the store interface
         hits = [s for s in self.app.store.list_sms_since(0, 500)
                 if s["trxid"] == "DUPTRX01"]
         self.assertEqual(len(hits), 1)
@@ -199,7 +191,6 @@ class FlowsPanelAuth(GatewayFlows):
         self.assertEqual(r.status_code, 401)
 
     def test_admin_login_and_demo_passwords_work(self):
-        # deterministic seeding contract: env admin password must verify
         self.assertEqual(os.environ.get("GATEWAY_ADMIN_PASSWORD"),
                          "test-admin-pass")
         admin = self.app.store.find_admin("admin")
