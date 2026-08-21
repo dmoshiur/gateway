@@ -26,7 +26,7 @@ no aggregator contracts, no per-transaction middleman fees.
 ```bash
 pip install -r requirements.txt
 
-# start the gateway (creates data/gateway.db, admin + demo merchant/device)
+# start the gateway (creates the store, admin + demo merchant/device)
 export GATEWAY_ADMIN_PASSWORD='choose-a-strong-admin-password'
 python run.py --init-demo
 
@@ -35,6 +35,14 @@ python run.py --init-demo
 python tools/demo_flow.py
 ```
 
+> **Credentials are deterministic and self-healing.** On every boot:
+> * if `GATEWAY_ADMIN_PASSWORD` is set, the superadmin hash is re-synced to it
+>   (fixing any drift from old DBs/restores);
+> * `--init-demo` re-syncs the demo merchant password (`demo12345`),
+>   API key pair and Termux device — credentials always match
+>   `data/demo_credentials.json`.
+> * Login input is whitespace-trimmed (copy-paste safe).
+
 | Surface            | URL                        | Credentials (demo mode)                    |
 |--------------------|----------------------------|---------------------------------------------|
 | Superadmin console | `/admin`                   | `admin` / `$GATEWAY_ADMIN_PASSWORD`         |
@@ -42,9 +50,11 @@ python tools/demo_flow.py
 | Landing page       | `/`                        | —                                           |
 | Demo credentials   | `data/demo_credentials.json` | merchant API key pair + Termux device secret |
 
-Run the regex/unit tests:
+Run the test suites (parser + full API/security flows on **both** SQLite and
+MongoDB-via-mongomock):
 
 ```bash
+cd tests && python -m unittest discover -s . -p "test_*.py"   # 65 tests
 python tests/test_sms_parser.py
 python termux/termux_listener.py --test \
   "You have received Tk 1,500.00 from 01712345678. TrxID 9HK8A2X1LM at 19/08/2026 14:30"
@@ -73,12 +83,38 @@ receives MFS balance-update SMS:
 
 ### 2.2 Central backend (`backend/`)
 
-| Module          | Responsibility |
-|-----------------|----------------|
-| `app.py`        | All HTTP routes, auth decorators, rate limiting, IPN dispatch |
-| `database.py`   | SQLite (WAL), schema, settings, seeding, audit trail |
-| `sms_parser.py` | Regex engine (mirrored in the listener) |
-| `security.py`   | HMAC signing/verify, PBKDF2 passwords, key generation |
+| Module                | Responsibility |
+|-----------------------|----------------|
+| `app.py`              | All HTTP routes, auth decorators, rate limiting, IPN dispatch |
+| `store/`              | **Pluggable persistence layer** — `SQLiteStore` (default, zero-infra) or `MongoStore` (`pymongo`), identical document semantics, interchangeable via one env var |
+| `sms_parser.py`       | Regex engine (mirrored in the listener) |
+| `security.py`         | HMAC signing/verify, PBKDF2 passwords, key generation |
+| `demo.py`             | Deterministic demo seeding |
+
+**Choosing MongoDB (GATEWAY_DB_BACKEND=mongodb):**
+
+```bash
+pip install -r requirements.txt            # includes pymongo
+
+# local mongod
+mongod --dbpath /var/lib/mongo &
+GATEWAY_DB_BACKEND=mongodb MONGO_URI=mongodb://localhost:27017 python run.py --init-demo
+
+# or MongoDB Atlas
+GATEWAY_DB_BACKEND=mongodb \
+MONGO_URI='mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net' \
+MONGO_DB=mfs_gateway python run.py --init-demo
+```
+
+The Mongo backend uses unique indexes (`trxid_norm`, `merchants.email`,
+`api_keys.key_id`, compound `merchant_id+order_id`) and atomic
+`findOneAndUpdate` claims — the same replay/double-spend guarantees as
+SQLite. `GET /healthz` reports the active backend.
+
+> Scaling notes: SQLite (WAL) comfortably handles single-gateway volumes;
+> choose MongoDB when you need replica-set durability, ops tooling, or
+> horizontal sharding of the SMS ledger. Both backends pass the identical
+> 60+ test flow suite (`tests/`).
 
 **Payment ledger model** — webhook facts and checkout sessions are separate
 tables joined at verification time:
@@ -248,7 +284,8 @@ Duplicates return `{"status":"duplicate"}` safely.
 > **Production notes.** API/device secrets are stored server-side (like Stripe
 > live secrets) so HMAC can be verified; `data/` is `0600`-permissioned and
 > git-ignored. For high-volume deployments: swap SQLite → PostgreSQL
-> (`database.py` is the only layer to port), put secrets behind KMS/Vault,
+> (`backend/store/` is the only layer to swap — MongoDB support already
+> ships; PostgreSQL would be a third backend behind the same interface), put secrets behind KMS/Vault,
 > run behind gunicorn + TLS (Caddy/Nginx), enforce HTTPS, and rotate keys via
 > the admin panel. Prefer **Personal** wallets with unique per-order reference
 > codes if you expect same-amount collisions within minutes.
@@ -262,14 +299,22 @@ Duplicates return `{"status":"duplicate"}` safely.
 ├── requirements.txt
 ├── backend/
 │   ├── app.py                 # routes: webhook, checkout, panels
-│   ├── database.py            # schema + seeding + helpers
+│   ├── store/
+│   │   ├── __init__.py        # store contract + backend factory
+│   │   ├── sqlite_store.py    # default single-file backend
+│   │   └── mongo_store.py     # MongoDB backend (pymongo)
+│   ├── demo.py                # deterministic demo seeding
 │   ├── security.py            # HMAC / PBKDF2 / keygen
 │   ├── sms_parser.py          # provider regex engine
 │   └── templates/             # checkout, admin, dashboard, auth UIs
 ├── termux/
 │   ├── termux_listener.py     # Android daemon (stdlib-only)
 │   └── install.sh             # Termux bootstrap
-├── tests/test_sms_parser.py   # regex unit tests
+├── tests/
+│   ├── test_sms_parser.py     # regex unit tests
+│   ├── flow_base.py           # shared API/security flow suite
+│   ├── test_api_flows.py      #   → run against SQLite
+│   └── test_mongo_store.py    #   → run against MongoDB (mongomock)
 └── tools/demo_flow.py         # E2E simulation + merchant SDK reference
 ```
 
@@ -278,10 +323,14 @@ Duplicates return `{"status":"duplicate"}` safely.
 | Env var                  | Default                | Purpose |
 |--------------------------|------------------------|---------|
 | `PORT`                   | `8000`                 | HTTP port |
-| `GATEWAY_DB`             | `data/gateway.db`      | SQLite path |
+| `GATEWAY_DB_BACKEND`     | `sqlite`               | `sqlite` or `mongodb` |
+| `GATEWAY_DB`             | `data/gateway.db`      | SQLite path (sqlite backend) |
+| `MONGO_URI`              | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGO_DB`               | `mfs_gateway`          | MongoDB database name |
 | `GATEWAY_SECRET`         | generated → `data/secret_key` | session + redirect/IPN signing key |
-| `GATEWAY_ADMIN_USER`     | `admin`                | first-boot superadmin |
-| `GATEWAY_ADMIN_PASSWORD` | random (printed once)  | first-boot superadmin password |
+| `GATEWAY_ADMIN_USER`     | `admin`                | superadmin username (created/synced at boot) |
+| `GATEWAY_ADMIN_PASSWORD` | random (printed once)  | superadmin password — **re-synced every boot** |
+| `GATEWAY_SHOW_LOGIN_HINTS` | —                    | `1` = show configured/demo creds on login pages (dev only!) |
 | `GATEWAY_SERVER_URL` / `GATEWAY_DEVICE_ID` / `GATEWAY_DEVICE_SECRET` | — | Termux listener overrides |
 
 Provider wallet numbers, checkout TTL, gateway branding: **Admin → Settings**.

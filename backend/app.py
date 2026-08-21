@@ -1,7 +1,8 @@
 """
 Automated MFS Payment Gateway — central backend.
 
-Flask + SQLite. Money is integer paisa everywhere; timestamps are UTC ISO-8601.
+Flask + pluggable store (SQLite default, MongoDB via GATEWAY_DB_BACKEND=mongodb).
+Money is integer paisa everywhere; timestamps are UTC ISO-8601.
 
 Public / device API
     POST /api/v1/webhook/sms            Termux listener pushes parsed SMS (HMAC)
@@ -34,11 +35,33 @@ import threading
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
-from flask import (Flask, abort, g, jsonify, redirect, render_template,
-                   request, session, url_for)
+from flask import (Flask, abort, current_app, jsonify, redirect,
+                   render_template, request, session, url_for)
 from flask.sessions import SecureCookieSessionInterface
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+from .security import (generate_api_key_pair, generate_device_credentials,
+                       hash_password, new_csrf_token, new_session_id, safe_int,
+                       sha256_hex, sign_payload, verify_password,
+                       verify_request_signature)
+from .sms_parser import amount_to_paisa, normalize_msisdn, paisa_to_bdt
+from .store import DuplicateError, make_store, utcnow_iso
+
+log = logging.getLogger("gateway")
+
+MIN_AMOUNT_PAISA = 1_000          # ৳10.00
+MAX_AMOUNT_PAISA = 50_000_000     # ৳500,000
+MAX_MERCHANT_KEYS = 50
+SESSION_RE = re.compile(r"^ps_[A-Za-z0-9_\-]{8,64}$")
+TRXID_RE = re.compile(r"^[A-Za-z0-9\-]{6,24}$")
+WALLET_RE = re.compile(r"^01\d{9}$")
+ORDER_RE = re.compile(r"^[A-Za-z0-9_\-\.]{3,64}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+_RATE_BUCKETS: dict[str, list[float]] = {}
+_RATE_LOCK = threading.Lock()
 
 
 class AdaptiveSessionInterface(SecureCookieSessionInterface):
@@ -56,36 +79,19 @@ class AdaptiveSessionInterface(SecureCookieSessionInterface):
         except RuntimeError:
             return False
 
-    def get_cookie_samesite(self, app):  # noqa: D102
+    def get_cookie_samesite(self, app):
         if self._https():
             return "None"
         return super().get_cookie_samesite(app)
 
-    def get_cookie_secure(self, app):  # noqa: D102
+    def get_cookie_secure(self, app):
         if self._https():
             return True
         return super().get_cookie_secure(app)
 
-from . import database as db
-from .database import audit, get_db, get_setting, row_to_dict, set_setting, utcnow_iso
-from .security import (generate_api_key_pair, generate_device_credentials,
-                       hash_password, new_csrf_token, new_session_id, safe_int,
-                       sha256_hex, sign_payload, verify_password,
-                       verify_request_signature)
-from .sms_parser import amount_to_paisa, normalize_msisdn, paisa_to_bdt
 
-log = logging.getLogger("gateway")
-
-MIN_AMOUNT_PAISA = 1_000          # ৳10.00
-MAX_AMOUNT_PAISA = 50_000_000     # ৳500,000
-SESSION_RE = re.compile(r"^ps_[A-Za-z0-9_\-]{8,64}$")
-TRXID_RE = re.compile(r"^[A-Za-z0-9\-]{6,24}$")
-WALLET_RE = re.compile(r"^01\d{9}$")
-ORDER_RE = re.compile(r"^[A-Za-z0-9_\-\.]{3,64}$")
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-_RATE_BUCKETS: dict[str, list[float]] = {}
-_RATE_LOCK = threading.Lock()
+def _store():
+    return current_app.store
 
 
 def create_app() -> Flask:
@@ -115,8 +121,11 @@ def create_app() -> Flask:
                 fh.write(app.secret_key)
 
     app.permanent_session_lifetime = timedelta(hours=12)
-    app.teardown_appcontext(db.close_db)
-    db.init_db(app)
+
+    # Persistence backend (SQLite or MongoDB). Handles schema/indexes,
+    # default settings and deterministic superadmin on init.
+    app.store = make_store(app)
+    app.store.init(app)
 
     # ------------------------------------------------------------------
     # Request lifecycle
@@ -193,9 +202,7 @@ def create_app() -> Flask:
         ts = request.headers.get("X-Timestamp", "")
         sig = request.headers.get("X-Signature", "")
         body = request.get_data(cache=True, as_text=True) or ""
-        row = db.get_db().execute(
-            "SELECT * FROM devices WHERE device_id=? AND status='active'",
-            (device_id,)).fetchone()
+        row = _store().find_active_device(device_id)
         if not row:
             return None
         if not verify_request_signature(secret=row["secret"], key_id=device_id,
@@ -209,52 +216,43 @@ def create_app() -> Flask:
         ts = request.headers.get("X-Timestamp", "")
         sig = request.headers.get("X-Signature", "")
         body = request.get_data(cache=True, as_text=True) or ""
-        conn = db.get_db()
-        key = conn.execute(
-            "SELECT * FROM api_keys WHERE key_id=? AND status='active'",
-            (key_id,)).fetchone()
+        store = _store()
+        key = store.find_active_key(key_id)
         if not key:
             return None, None
-        merchant = conn.execute(
-            "SELECT * FROM merchants WHERE id=? AND status='active'",
-            (key["merchant_id"],)).fetchone()
-        if not merchant:
+        merchant = store.get_merchant(key["merchant_id"])
+        if not merchant or merchant["status"] != "active":
             return None, None
         if not verify_request_signature(secret=key["secret"], key_id=key_id,
                                         timestamp=ts, body=body, provided_signature=sig):
             return None, None
-        conn.execute("UPDATE api_keys SET last_used_at=? WHERE id=?",
-                     (utcnow_iso(), key["id"]))
-        conn.commit()
+        store.touch_key(key["id"], utcnow_iso())
         return key, merchant
 
-    def _touch_session(conn, row):
+    def _touch_session(sess: dict) -> dict:
         """Return session dict, lazily flipping pending->expired."""
-        sess = dict(row)
+        sess = dict(sess)
         if sess["status"] == "pending":
             exp = datetime.fromisoformat(sess["expires_at"])
             if datetime.now(timezone.utc) > exp:
-                conn.execute(
-                    "UPDATE payment_sessions SET status='expired' WHERE id=? AND status='pending'",
-                    (sess["id"],))
-                conn.commit()
+                _store().mark_session_expired(sess["id"])
                 sess["status"] = "expired"
         return sess
 
-    def _provider_wallets(conn) -> dict:
+    def _provider_wallets() -> dict:
         try:
-            return json.loads(get_setting(conn, "provider_wallets", "{}"))
+            return json.loads(_store().get_setting("provider_wallets", "{}"))
         except json.JSONDecodeError:
             return {}
 
-    def _session_public_dict(sess: dict, conn) -> dict:
-        wallets = _provider_wallets(conn)
+    def _session_public_dict(sess: dict) -> dict:
+        store = _store()
+        wallets = _provider_wallets()
         methods = {
             name: {"number": cfg.get("number", ""), "type": cfg.get("type", "Personal")}
             for name, cfg in wallets.items() if cfg.get("enabled")
         }
-        merch = conn.execute("SELECT name FROM merchants WHERE id=?",
-                             (sess["merchant_id"],)).fetchone()
+        merch = store.get_merchant(sess["merchant_id"])
         return {
             "session_id": sess["id"],
             "merchant_name": merch["name"] if merch else "Merchant",
@@ -268,7 +266,7 @@ def create_app() -> Flask:
             "provider": sess.get("provider"),
             "expires_at": sess["expires_at"],
             "methods": methods,
-            "gateway_name": get_setting(conn, "gateway_name", "MFS Gateway"),
+            "gateway_name": store.get_setting("gateway_name", "MFS Gateway"),
         }
 
     def _dispatch_ipn(sess: dict) -> None:
@@ -306,7 +304,6 @@ def create_app() -> Flask:
 
     def _signed_redirect(base_url: str, sess: dict) -> str:
         canonical = f"{sess['id']}|{sess['order_id']}|{sess['amount_paisa']}|{sess.get('trxid') or ''}"
-        from urllib.parse import urlencode
         params = {
             "status": sess["status"],
             "session_id": sess["id"],
@@ -342,26 +339,15 @@ def create_app() -> Flask:
         if not TRXID_RE.fullmatch(trxid) or amount <= 0:
             return jsonify({"error": "invalid_payload"}), 400
 
-        conn = db.get_db()
-        try:
-            conn.execute(
-                "INSERT INTO sms_transactions(provider, sender, amount_paisa, trxid,"
-                " device_id, sms_timestamp, raw_hash, status, created_at)"
-                " VALUES(?,?,?,?,?,?,?,'unused',?)",
-                (provider, sender, amount, trxid, device["device_id"],
-                 sms_ts or utcnow_iso(), raw_hash, utcnow_iso()))
-            conn.execute("UPDATE devices SET last_seen_at=? WHERE device_id=?",
-                         (utcnow_iso(), device["device_id"]))
-            audit(conn, f"device:{device['device_id']}", "sms_received",
-                  f"{provider} {trxid} ৳{paisa_to_bdt(amount)}")
-            conn.commit()
-        except Exception as exc:  # UNIQUE(trxid) replay
-            conn.rollback()
-            if "UNIQUE" in str(exc).upper():
-                return jsonify({"status": "duplicate"}), 200
-            log.exception("webhook insert failed")
-            return jsonify({"error": "internal"}), 500
-
+        store = _store()
+        result = store.insert_sms(provider, sender, amount, trxid,
+                                  device["device_id"], sms_ts or utcnow_iso(),
+                                  raw_hash)
+        store.touch_device(device["device_id"], utcnow_iso())
+        if result == "duplicate":
+            return jsonify({"status": "duplicate"}), 200
+        store.audit(f"device:{device['device_id']}", "sms_received",
+                    f"{provider} {trxid} ৳{paisa_to_bdt(amount)}")
         return jsonify({"status": "stored", "trxid": trxid}), 201
 
     @app.post("/api/v1/device/heartbeat")
@@ -369,10 +355,7 @@ def create_app() -> Flask:
         device = _device_auth()
         if not device:
             return jsonify({"error": "invalid_signature"}), 401
-        conn = db.get_db()
-        conn.execute("UPDATE devices SET last_seen_at=? WHERE device_id=?",
-                     (utcnow_iso(), device["device_id"]))
-        conn.commit()
+        _store().touch_device(device["device_id"], utcnow_iso())
         return jsonify({"status": "ok", "server_time": utcnow_iso()})
 
     # ==================================================================
@@ -405,12 +388,10 @@ def create_app() -> Flask:
             if u and not u.startswith(("http://", "https://")):
                 return jsonify({"error": "URLs must be absolute http(s)"}), 400
 
-        conn = db.get_db()
-        existing = conn.execute(
-            "SELECT * FROM payment_sessions WHERE merchant_id=? AND order_id=?",
-            (merchant["id"], order_id)).fetchone()
+        store = _store()
+        existing = store.find_session_by_order(merchant["id"], order_id)
         if existing:
-            sess = _touch_session(conn, existing)
+            sess = _touch_session(existing)
             return jsonify({
                 "idempotent_replay": True,
                 "session_id": sess["id"],
@@ -421,24 +402,22 @@ def create_app() -> Flask:
                 "currency": sess["currency"],
             })
 
-        ttl = max(5, safe_int(get_setting(conn, "session_ttl_minutes", "15"), 15))
+        ttl = max(5, safe_int(store.get_setting("session_ttl_minutes", "15"), 15))
         sid = new_session_id()
         expires = (datetime.now(timezone.utc) + timedelta(minutes=ttl)) \
             .replace(microsecond=0).isoformat()
-        conn.execute(
-            "INSERT INTO payment_sessions(id, merchant_id, api_key_id, order_id,"
-            " amount_paisa, currency, customer_name, customer_email, customer_phone,"
-            " success_url, cancel_url, callback_url, status, expires_at, created_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)",
-            (sid, merchant["id"], key["id"], order_id, amount,
-             str(data.get("currency", "BDT"))[:3].upper() or "BDT",
-             str(data.get("customer_name", ""))[:120],
-             str(data.get("customer_email", ""))[:120],
-             str(data.get("customer_phone", ""))[:20],
-             success_url, cancel_url, callback_url, expires, utcnow_iso()))
-        audit(conn, f"merchant:{merchant['email']}", "session_created",
-                  f"{sid} {order_id} ৳{paisa_to_bdt(amount)}")
-        conn.commit()
+        store.create_session({
+            "id": sid, "merchant_id": merchant["id"], "api_key_id": key["id"],
+            "order_id": order_id, "amount_paisa": amount,
+            "currency": str(data.get("currency", "BDT"))[:3].upper() or "BDT",
+            "customer_name": str(data.get("customer_name", ""))[:120],
+            "customer_email": str(data.get("customer_email", ""))[:120],
+            "customer_phone": str(data.get("customer_phone", ""))[:20],
+            "success_url": success_url, "cancel_url": cancel_url,
+            "callback_url": callback_url, "expires_at": expires,
+        })
+        store.audit(f"merchant:{merchant['email']}", "session_created",
+                    f"{sid} {order_id} ৳{paisa_to_bdt(amount)}")
 
         return jsonify({
             "session_id": sid,
@@ -455,13 +434,10 @@ def create_app() -> Flask:
         key, merchant = _merchant_api_auth()
         if not key:
             return jsonify({"error": "invalid_signature"}), 401
-        conn = db.get_db()
-        row = conn.execute(
-            "SELECT * FROM payment_sessions WHERE id=? AND merchant_id=?",
-            (session_id, merchant["id"])).fetchone()
-        if not row:
+        raw = _store().find_session(session_id)
+        if not raw or raw["merchant_id"] != merchant["id"]:
             return jsonify({"error": "not_found"}), 404
-        sess = _touch_session(conn, row)
+        sess = _touch_session(raw)
         return jsonify({
             "session_id": sess["id"], "order_id": sess["order_id"],
             "status": sess["status"], "amount_paisa": sess["amount_paisa"],
@@ -486,22 +462,17 @@ def create_app() -> Flask:
 
     @app.get("/api/v1/checkout/<session_id>")
     def checkout_state(session_id):
-        conn = db.get_db()
-        row = conn.execute("SELECT * FROM payment_sessions WHERE id=?",
-                           (session_id,)).fetchone()
-        if not row:
+        raw = _store().find_session(session_id)
+        if not raw:
             return jsonify({"error": "not_found"}), 404
-        sess = _touch_session(conn, row)
-        return jsonify(_session_public_dict(sess, conn))
+        return jsonify(_session_public_dict(_touch_session(raw)))
 
     @app.get("/api/v1/checkout/<session_id>/status")
     def checkout_status(session_id):
-        conn = db.get_db()
-        row = conn.execute("SELECT * FROM payment_sessions WHERE id=?",
-                           (session_id,)).fetchone()
-        if not row:
+        raw = _store().find_session(session_id)
+        if not raw:
             return jsonify({"error": "not_found"}), 404
-        sess = _touch_session(conn, row)
+        sess = _touch_session(raw)
         out = {"status": sess["status"], "trxid": sess.get("trxid"),
                "provider": sess.get("provider")}
         if sess["status"] == "paid" and sess["success_url"]:
@@ -530,12 +501,11 @@ def create_app() -> Flask:
             return jsonify({"result": "invalid",
                             "message": "Transaction ID must be 6-24 letters/digits."}), 400
 
-        conn = db.get_db()
-        row = conn.execute("SELECT * FROM payment_sessions WHERE id=?",
-                           (session_id,)).fetchone()
-        if not row:
+        store = _store()
+        raw = store.find_session(session_id)
+        if not raw:
             return jsonify({"result": "invalid", "message": "Session not found."}), 404
-        sess = _touch_session(conn, row)
+        sess = _touch_session(raw)
 
         if sess["status"] == "paid":
             return jsonify({"result": "paid",
@@ -548,17 +518,13 @@ def create_app() -> Flask:
             return jsonify({"result": sess["status"],
                             "message": "This payment session is no longer active."})
 
-        max_attempts = safe_int(get_setting(conn, "max_verify_attempts", "10"), 10)
+        max_attempts = safe_int(store.get_setting("max_verify_attempts", "10"), 10)
         if sess["attempts"] >= max_attempts:
             return jsonify({"result": "locked",
                             "message": "Too many attempts. Contact the merchant."})
 
-        conn.execute("UPDATE payment_sessions SET attempts=attempts+1 WHERE id=?",
-                     (session_id,))
-        conn.commit()
-
-        sms = conn.execute(
-            "SELECT * FROM sms_transactions WHERE UPPER(trxid)=?", (trxid,)).fetchone()
+        store.increment_attempts(session_id)
+        sms = store.find_sms_by_trxid(trxid)
 
         if not sms:
             # Buyer may have just paid; SMS might still be in flight.
@@ -568,40 +534,30 @@ def create_app() -> Flask:
                            "wait 30-60 seconds and press Verify again.",
             })
 
-        if sms["status"] == "consumed" and sms["matched_session_id"] != session_id:
+        if sms["status"] == "consumed" and sms.get("matched_session_id") != session_id:
             return jsonify({"result": "used",
                             "message": "This TrxID was already used for another payment."})
 
         if sms["amount_paisa"] != sess["amount_paisa"]:
-            audit(conn, "checkout", "amount_mismatch",
-                  f"{session_id} {trxid} expected BDT {sess['amount_paisa']} "
-                  f"got {sms['amount_paisa']}")
-            conn.commit()
+            store.audit("checkout", "amount_mismatch",
+                        f"{session_id} {trxid} expected BDT {sess['amount_paisa']} "
+                        f"got {sms['amount_paisa']}")
             return jsonify({
                 "result": "amount_mismatch",
                 "message": f"TrxID found but the amount doesn't match "
                            f"(expected ৳{paisa_to_bdt(sess['amount_paisa'])}).",
             })
 
-        # Atomic consume: exactly one session may claim an SMS fact.
-        cur = conn.execute(
-            "UPDATE sms_transactions SET status='consumed', matched_session_id=?"
-            " WHERE id=? AND status='unused'",
-            (session_id, sms["id"]))
-        if cur.rowcount != 1:
-            conn.rollback()
+        # Atomic claim: exactly one session may consume an SMS fact.
+        if not store.claim_sms(sms["id"], session_id):
             return jsonify({"result": "used",
                             "message": "This TrxID was already consumed."})
 
         paid_at = utcnow_iso()
-        conn.execute(
-            "UPDATE payment_sessions SET status='paid', provider=?, payer_wallet=?,"
-            " trxid=?, paid_at=? WHERE id=?",
-            (sms["provider"], wallet, trxid, paid_at, session_id))
-        audit(conn, "checkout", "payment_verified",
-              f"{session_id} {sms['provider']} {trxid} "
-              f"৳{paisa_to_bdt(sess['amount_paisa'])}")
-        conn.commit()
+        store.mark_session_paid(session_id, sms["provider"], wallet, trxid, paid_at)
+        store.audit("checkout", "payment_verified",
+                    f"{session_id} {sms['provider']} {trxid} "
+                    f"৳{paisa_to_bdt(sess['amount_paisa'])}")
 
         sess.update({"status": "paid", "trxid": trxid, "paid_at": paid_at,
                      "payer_wallet": wallet, "provider": sms["provider"]})
@@ -625,21 +581,15 @@ def create_app() -> Flask:
             f = request.form
             email = f.get("email", "").strip().lower()[:120]
             name = f.get("name", "").strip()[:120]
-            password = f.get("password", "")
+            password = f.get("password", "").strip()
             if not EMAIL_RE.fullmatch(email) or not name or len(password) < 8:
                 error = "Valid email, business name, and 8+ char password required."
             else:
-                conn = db.get_db()
                 try:
-                    conn.execute(
-                        "INSERT INTO merchants(email, name, password_hash, status,"
-                        " created_at) VALUES(?,?,?,'active',?)",
-                        (email, name, hash_password(password), utcnow_iso()))
-                    audit(conn, email, "merchant_registered", name)
-                    conn.commit()
+                    _store().create_merchant(email, name, hash_password(password))
+                    _store().audit(email, "merchant_registered", name)
                     return redirect(url_for("merchant_login", registered="1"))
-                except Exception:
-                    conn.rollback()
+                except DuplicateError:
                     error = "This email is already registered."
         elif request.method == "POST":
             error = "Session expired — please retry."
@@ -650,10 +600,9 @@ def create_app() -> Flask:
         error = None
         if request.method == "POST" and _check_csrf():
             email = request.form.get("email", "").strip().lower()
-            row = db.get_db().execute(
-                "SELECT * FROM merchants WHERE email=?", (email,)).fetchone()
+            row = _store().find_merchant_by_email(email)
             if row and row["status"] == "active" and verify_password(
-                    request.form.get("password", ""), row["password_hash"]):
+                    request.form.get("password", "").strip(), row["password_hash"]):
                 session.clear()
                 session["merchant_id"] = row["id"]
                 session["csrf"] = new_csrf_token()
@@ -662,7 +611,11 @@ def create_app() -> Flask:
             error = "Invalid credentials or account suspended."
         elif request.method == "POST":
             error = "Session expired — please retry."
-        return render_template("merchant_login.html", error=error)
+        demo_hint = (os.environ.get("GATEWAY_SHOW_LOGIN_HINTS") == "1"
+                     and _store().find_merchant_by_email("demo@merchant.test")
+                     is not None)
+        return render_template("merchant_login.html", error=error,
+                               demo_hint=demo_hint)
 
     @app.get("/logout")
     def merchant_logout():
@@ -678,48 +631,35 @@ def create_app() -> Flask:
     @require_merchant
     def merchant_summary():
         mid = session["merchant_id"]
-        conn = db.get_db()
-        row = conn.execute("SELECT name, email, created_at FROM merchants WHERE id=?",
-                           (mid,)).fetchone()
-        stats = {}
-        for label, start in (
-                ("today", datetime.now(timezone.utc).date().isoformat()),
-                ("all", "1970-01-01")):
-            s = conn.execute(
-                "SELECT COUNT(*) c, COALESCE(SUM(amount_paisa),0) v FROM payment_sessions"
-                " WHERE merchant_id=? AND status='paid' AND paid_at>=?",
-                (mid, start)).fetchone()
-            stats[label] = {"count": s["c"], "volume": paisa_to_bdt(s["v"])}
-        stats["pending"] = conn.execute(
-            "SELECT COUNT(*) c FROM payment_sessions WHERE merchant_id=? AND status='pending'",
-            (mid,)).fetchone()["c"]
-        keys = conn.execute(
-            "SELECT id, key_id, label, status, created_at, last_used_at FROM api_keys"
-            " WHERE merchant_id=? ORDER BY id DESC", (mid,)).fetchall()
-        recent = conn.execute(
-            "SELECT id, order_id, amount_paisa, status, provider, trxid,"
-            " payer_wallet, created_at, paid_at FROM payment_sessions"
-            " WHERE merchant_id=? ORDER BY created_at DESC LIMIT 50", (mid,)).fetchall()
+        store = _store()
+        row = store.get_merchant(mid)
+        today = datetime.now(timezone.utc).date().isoformat()
+        stats = {
+            "today": store.payment_stats(mid, today),
+            "all": store.payment_stats(mid, None),
+            "pending": store.count_pending_sessions(mid),
+        }
+        for k in ("today", "all"):
+            stats[k] = {"count": stats[k]["count"],
+                        "volume": paisa_to_bdt(stats[k]["volume"])}
+        keys = store.list_keys_for_merchant(mid)
+        recent = store.list_sessions(mid, 50)
         return jsonify({
-            "merchant": dict(row), "stats": stats,
-            "keys": [dict(k) for k in keys],
-            "sessions": [dict(r) | {"amount_bdt": paisa_to_bdt(r["amount_paisa"])}
-                         for r in recent],
+            "merchant": {"name": row["name"], "email": row["email"],
+                         "created_at": row["created_at"]},
+            "stats": stats,
+            "keys": keys,
+            "sessions": [_session_view(r) for r in recent],
         })
 
     @app.get("/dashboard/api/transactions")
     @require_merchant
     def merchant_transactions():
-        mid = session["merchant_id"]
-        conn = db.get_db()
-        rows = conn.execute(
-            "SELECT id, order_id, amount_paisa, status, provider, trxid,"
-            " payer_wallet, attempts, created_at, paid_at FROM payment_sessions"
-            " WHERE merchant_id=? ORDER BY created_at DESC LIMIT 100", (mid,)).fetchall()
+        rows = _store().list_sessions(session["merchant_id"], 100)
         return jsonify({"sessions": [
-            dict(r) | {"amount_bdt": paisa_to_bdt(r["amount_paisa"]),
-                       "checkout_url": url_for("checkout_page", session_id=r["id"],
-                                               _external=True)} for r in rows]})
+            _session_view(r) | {"checkout_url": url_for(
+                "checkout_page", session_id=r["id"], _external=True)}
+            for r in rows]})
 
     @app.post("/api/v1/merchant/keys/generate")
     @require_merchant
@@ -727,19 +667,12 @@ def create_app() -> Flask:
     def generate_key():
         data = request.get_json(silent=True) or {}
         label = str(data.get("label", "default"))[:60]
-        conn = db.get_db()
-        count = conn.execute(
-            "SELECT COUNT(*) c FROM api_keys WHERE merchant_id=?",
-            (session["merchant_id"],)).fetchone()["c"]
-        if count >= 50:
-            return jsonify({"error": "key limit reached (50)"}), 400
+        store = _store()
+        if store.count_keys(session["merchant_id"]) >= MAX_MERCHANT_KEYS:
+            return jsonify({"error": f"key limit reached ({MAX_MERCHANT_KEYS})"}), 400
         pk, sk = generate_api_key_pair()
-        conn.execute(
-            "INSERT INTO api_keys(merchant_id, key_id, secret, label, status,"
-            " created_at) VALUES(?,?,?,?,'active',?)",
-            (session["merchant_id"], pk, sk, label, utcnow_iso()))
-        audit(conn, f"merchant:{session['merchant_id']}", "key_generated", label)
-        conn.commit()
+        store.create_api_key(session["merchant_id"], pk, sk, label)
+        store.audit(f"merchant:{session['merchant_id']}", "key_generated", label)
         return jsonify({"key_id": pk, "secret": sk, "label": label}), 201
 
     @app.post("/dashboard/api/keys/<int:key_id>/status")
@@ -750,14 +683,10 @@ def create_app() -> Flask:
         status = data.get("status")
         if status not in ("active", "revoked"):
             return jsonify({"error": "bad status"}), 400
-        conn = db.get_db()
-        cur = conn.execute(
-            "UPDATE api_keys SET status=? WHERE id=? AND merchant_id=?",
-            (status, key_id, session["merchant_id"]))
-        audit(conn, f"merchant:{session['merchant_id']}", "key_status",
-              f"key={key_id} -> {status}")
-        conn.commit()
-        return jsonify({"updated": cur.rowcount})
+        updated = _store().set_key_status(key_id, status, session["merchant_id"])
+        _store().audit(f"merchant:{session['merchant_id']}", "key_status",
+                       f"key={key_id} -> {status}")
+        return jsonify({"updated": updated})
 
     @app.post("/dashboard/api/test-checkout")
     @require_merchant
@@ -769,24 +698,22 @@ def create_app() -> Flask:
         except ValueError:
             return jsonify({"error": "invalid amount"}), 400
         amount = min(max(amount, MIN_AMOUNT_PAISA), MAX_AMOUNT_PAISA)
-        conn = db.get_db()
-        key = conn.execute(
-            "SELECT id FROM api_keys WHERE merchant_id=? AND status='active' LIMIT 1",
-            (session["merchant_id"],)).fetchone()
+        store = _store()
+        active_keys = [k for k in store.list_keys_for_merchant(session["merchant_id"])
+                       if k["status"] == "active"]
         sid = new_session_id()
-        ttl = max(5, safe_int(get_setting(conn, "session_ttl_minutes", "15"), 15))
+        ttl = max(5, safe_int(store.get_setting("session_ttl_minutes", "15"), 15))
         expires = (datetime.now(timezone.utc) + timedelta(minutes=ttl)) \
             .replace(microsecond=0).isoformat()
         import secrets as _sec
-        conn.execute(
-            "INSERT INTO payment_sessions(id, merchant_id, api_key_id, order_id,"
-            " amount_paisa, currency, customer_name, success_url, cancel_url,"
-            " callback_url, status, expires_at, created_at)"
-            " VALUES(?,?,?,?,?, 'BDT', 'Test Customer','','','','pending',?,?)",
-            (sid, session["merchant_id"], key["id"] if key else None,
-             f"TEST-{_sec.token_hex(4).upper()}", amount, expires, utcnow_iso()))
-        audit(conn, f"merchant:{session['merchant_id']}", "test_checkout", sid)
-        conn.commit()
+        store.create_session({
+            "id": sid, "merchant_id": session["merchant_id"],
+            "api_key_id": active_keys[0]["id"] if active_keys else None,
+            "order_id": f"TEST-{_sec.token_hex(4).upper()}", "amount_paisa": amount,
+            "currency": "BDT", "customer_name": "Test Customer",
+            "expires_at": expires,
+        })
+        store.audit(f"merchant:{session['merchant_id']}", "test_checkout", sid)
         return jsonify({"session_id": sid,
                         "checkout_url": url_for("checkout_page", session_id=sid,
                                                 _external=True)})
@@ -799,21 +726,28 @@ def create_app() -> Flask:
     def admin_login():
         error = None
         if request.method == "POST" and _check_csrf():
-            row = db.get_db().execute(
-                "SELECT * FROM admins WHERE username=?",
-                (request.form.get("username", "").strip()[:60],)).fetchone()
-            if row and verify_password(request.form.get("password", ""),
+            username = request.form.get("username", "").strip()[:60]
+            row = _store().find_admin(username)
+            if row and verify_password(request.form.get("password", "").strip(),
                                        row["password_hash"]):
                 session.clear()
-                session["admin_id"] = row["id"]
-                session["admin_name"] = row["username"]
+                session["admin_id"] = username
+                session["admin_name"] = username
                 session["csrf"] = new_csrf_token()
                 session.permanent = True
                 return redirect(url_for("admin_panel"))
             error = "Invalid credentials."
         elif request.method == "POST":
             error = "Session expired — please retry."
-        return render_template("admin_login.html", error=error)
+        # Login hints are DEV-ONLY: shown when GATEWAY_SHOW_LOGIN_HINTS=1
+        # (this sandbox sets it; production never should).
+        show_hints = os.environ.get("GATEWAY_SHOW_LOGIN_HINTS") == "1"
+        admin_user = os.environ.get("GATEWAY_ADMIN_USER", "admin")
+        return render_template(
+            "admin_login.html", error=error,
+            admin_hint=admin_user if show_hints else None,
+            admin_env_password=(os.environ.get("GATEWAY_ADMIN_PASSWORD")
+                                if show_hints else None))
 
     @app.get("/admin/logout")
     def admin_logout():
@@ -828,85 +762,54 @@ def create_app() -> Flask:
     @app.get("/admin/api/summary")
     @require_admin
     def admin_summary():
-        conn = db.get_db()
+        store = _store()
         today = datetime.now(timezone.utc).date().isoformat()
-        vol = conn.execute(
-            "SELECT COUNT(*) c, COALESCE(SUM(amount_paisa),0) v FROM payment_sessions"
-            " WHERE status='paid' AND paid_at>=?", (today,)).fetchone()
-        tot = conn.execute(
-            "SELECT COUNT(*) c, COALESCE(SUM(amount_paisa),0) v FROM payment_sessions"
-            " WHERE status='paid'").fetchone()
-        sms_stats = {r["status"]: r["c"] for r in conn.execute(
-            "SELECT status, COUNT(*) c FROM sms_transactions GROUP BY status")}
+        vol = store.payment_stats(None, today)
+        tot = store.payment_stats(None, None)
         online_cut = (datetime.now(timezone.utc) - timedelta(minutes=5)) \
             .replace(microsecond=0).isoformat()
-        devices = [dict(d) | {"online": bool(d["last_seen_at"] and
-                                             d["last_seen_at"] >= online_cut)}
-                   for d in conn.execute(
-                       "SELECT id, device_id, name, status, last_seen_at, created_at"
-                       " FROM devices ORDER BY id DESC")]
-        for d in devices:
-            d.pop("secret", None)
-        recent_sms = [dict(r) | {"amount_bdt": paisa_to_bdt(r["amount_paisa"])}
-                      for r in conn.execute(
-                          "SELECT id, provider, sender, amount_paisa, trxid, device_id,"
-                          " status, matched_session_id, created_at FROM sms_transactions"
-                          " ORDER BY id DESC LIMIT 12")]
-        recent_paid = [dict(r) | {"amount_bdt": paisa_to_bdt(r["amount_paisa"])}
-                       for r in conn.execute(
-                           "SELECT p.id, p.order_id, p.amount_paisa, p.provider,"
-                           " p.trxid, p.paid_at, m.name merchant FROM payment_sessions p"
-                           " JOIN merchants m ON m.id=p.merchant_id"
-                           " WHERE p.status='paid' ORDER BY p.paid_at DESC LIMIT 12")]
+        devices = [d | {"online": bool(d.get("last_seen_at") and
+                                           d["last_seen_at"] >= online_cut)}
+                   for d in store.list_devices()]
+        recent_sms = [_sms_view(r) for r in store.list_sms_recent(12)]
+        recent_paid = [{k: r.get(k) for k in (
+            "id", "order_id", "merchant")} | {"provider": r.get("provider"),
+            "trxid": r.get("trxid"), "paid_at": r.get("paid_at"),
+            "amount_bdt": paisa_to_bdt(r["amount_paisa"])}
+            for r in store.list_paid_recent(12)]
         return jsonify({
-            "today_volume": paisa_to_bdt(vol["v"]), "today_count": vol["c"],
-            "total_volume": paisa_to_bdt(tot["v"]), "total_count": tot["c"],
-            "merchants": conn.execute("SELECT COUNT(*) c FROM merchants").fetchone()["c"],
-            "sms": sms_stats, "devices": devices,
+            "today_volume": paisa_to_bdt(vol["volume"]), "today_count": vol["count"],
+            "total_volume": paisa_to_bdt(tot["volume"]), "total_count": tot["count"],
+            "merchants": store.count_merchants(),
+            "sms": store.sms_stats(), "devices": devices,
             "recent_sms": recent_sms, "recent_paid": recent_paid,
         })
 
     @app.get("/admin/api/transactions")
     @require_admin
     def admin_transactions():
-        conn = db.get_db()
+        store = _store()
         since = safe_int(request.args.get("since_id"), 0)
-        rows = conn.execute(
-            "SELECT s.*, p.order_id, m.name merchant FROM sms_transactions s"
-            " LEFT JOIN payment_sessions p ON p.id=s.matched_session_id"
-            " LEFT JOIN merchants m ON m.id=p.merchant_id"
-            " WHERE s.id>? ORDER BY s.id DESC LIMIT 150", (since,)).fetchall()
-        sessions = conn.execute(
-            "SELECT p.id, p.order_id, p.amount_paisa, p.status, p.provider, p.trxid,"
-            " p.customer_name, p.created_at, p.paid_at, m.name merchant"
-            " FROM payment_sessions p JOIN merchants m ON m.id=p.merchant_id"
-            " ORDER BY p.created_at DESC LIMIT 100").fetchall()
+        rows = store.list_sms_since(since, 150)
+        sessions = store.list_sessions(None, 100)
         return jsonify({
-            "sms": [dict(r) | {"amount_bdt": paisa_to_bdt(r["amount_paisa"])}
-                    for r in rows],
-            "sessions": [dict(r) | {"amount_bdt": paisa_to_bdt(r["amount_paisa"])}
-                         for r in sessions],
+            "sms": [_sms_view(r) for r in rows],
+            "sessions": [_session_view(r) for r in sessions],
         })
 
     @app.post("/admin/api/transactions/<int:sms_id>/release")
     @require_admin
     @csrf_guard
     def admin_release_sms(sms_id):
-        conn = db.get_db()
-        row = conn.execute("SELECT * FROM sms_transactions WHERE id=?", (sms_id,)).fetchone()
+        store = _store()
+        row = store.get_sms(sms_id)
         if not row:
             return jsonify({"error": "not_found"}), 404
-        conn.execute(
-            "UPDATE sms_transactions SET status='unused', matched_session_id=NULL"
-            " WHERE id=?", (sms_id,))
-        if row["matched_session_id"]:
-            conn.execute(
-                "UPDATE payment_sessions SET status='pending', provider=NULL,"
-                " payer_wallet=NULL, trxid=NULL, paid_at=NULL"
-                " WHERE id=? AND status='paid'", (row["matched_session_id"],))
-        audit(conn, f"admin:{session.get('admin_name')}", "sms_released",
-              f"{row['trxid']} id={sms_id}")
-        conn.commit()
+        store.release_sms(sms_id)
+        if row.get("matched_session_id"):
+            store.reset_session_to_pending(row["matched_session_id"])
+        store.audit(f"admin:{session.get('admin_name')}", "sms_released",
+                    f"{row['trxid']} id={sms_id}")
         return jsonify({"released": True})
 
     @app.post("/admin/api/sms/inject")
@@ -924,38 +827,21 @@ def create_app() -> Flask:
             return jsonify({"error": "invalid amount"}), 400
         if not TRXID_RE.fullmatch(trxid) or amount <= 0:
             return jsonify({"error": "invalid_payload"}), 400
-        conn = db.get_db()
-        try:
-            conn.execute(
-                "INSERT INTO sms_transactions(provider, sender, amount_paisa, trxid,"
-                " device_id, sms_timestamp, raw_hash, status, created_at)"
-                " VALUES(?,?,?,?,?,?,?,'unused',?)",
-                (provider, sender, amount, trxid, "admin-console", utcnow_iso(),
-                 sha256_hex(f"inject:{trxid}"), utcnow_iso()))
-            audit(conn, f"admin:{session.get('admin_name')}", "sms_injected",
-                  f"{provider} {trxid} ৳{paisa_to_bdt(amount)}")
-            conn.commit()
-        except Exception as exc:
-            conn.rollback()
-            if "UNIQUE" in str(exc).upper():
-                return jsonify({"error": "trxid already exists"}), 409
-            raise
+        store = _store()
+        result = store.insert_sms(provider, sender, amount, trxid, "admin-console",
+                                  utcnow_iso(), sha256_hex(f"inject:{trxid}"))
+        if result == "duplicate":
+            return jsonify({"error": "trxid already exists"}), 409
+        store.audit(f"admin:{session.get('admin_name')}", "sms_injected",
+                    f"{provider} {trxid} ৳{paisa_to_bdt(amount)}")
         return jsonify({"injected": True}), 201
 
     @app.get("/admin/api/merchants")
     @require_admin
     def admin_merchants():
-        conn = db.get_db()
-        rows = conn.execute(
-            "SELECT m.id, m.email, m.name, m.status, m.created_at,"
-            " (SELECT COUNT(*) FROM api_keys k WHERE k.merchant_id=m.id) keys,"
-            " (SELECT COUNT(*) FROM payment_sessions p WHERE p.merchant_id=m.id"
-            "  AND p.status='paid') paid_count,"
-            " (SELECT COALESCE(SUM(p.amount_paisa),0) FROM payment_sessions p"
-            "  WHERE p.merchant_id=m.id AND p.status='paid') volume"
-            " FROM merchants m ORDER BY m.id DESC").fetchall()
+        rows = _store().list_merchants_enriched()
         return jsonify({"merchants": [
-            dict(r) | {"volume_bdt": paisa_to_bdt(r["volume"])} for r in rows]})
+            r | {"volume_bdt": paisa_to_bdt(r["volume"])} for r in rows]})
 
     @app.post("/admin/api/merchants/<int:mid>/status")
     @require_admin
@@ -965,55 +851,41 @@ def create_app() -> Flask:
         status = data.get("status")
         if status not in ("active", "suspended"):
             return jsonify({"error": "bad status"}), 400
-        conn = db.get_db()
-        conn.execute("UPDATE merchants SET status=? WHERE id=?", (status, mid))
-        audit(conn, f"admin:{session.get('admin_name')}", "merchant_status",
-              f"merchant={mid} -> {status}")
-        conn.commit()
+        _store().set_merchant_status(mid, status)
+        _store().audit(f"admin:{session.get('admin_name')}", "merchant_status",
+                       f"merchant={mid} -> {status}")
         return jsonify({"updated": True})
 
     @app.get("/admin/api/keys")
     @require_admin
     def admin_keys():
-        conn = db.get_db()
-        rows = conn.execute(
-            "SELECT k.id, k.key_id, k.label, k.status, k.created_at, k.last_used_at,"
-            " m.email merchant_email, m.name merchant_name FROM api_keys k"
-            " JOIN merchants m ON m.id=k.merchant_id ORDER BY k.id DESC").fetchall()
-        return jsonify({"keys": [dict(r) for r in rows]})
+        return jsonify({"keys": _store().list_all_keys_enriched()})
 
     @app.post("/admin/api/keys/<int:key_id>/revoke")
     @require_admin
     @csrf_guard
     def admin_revoke_key(key_id):
-        conn = db.get_db()
-        conn.execute("UPDATE api_keys SET status='revoked' WHERE id=?", (key_id,))
-        audit(conn, f"admin:{session.get('admin_name')}", "key_revoked", f"key={key_id}")
-        conn.commit()
+        _store().set_key_status(key_id, "revoked")
+        _store().audit(f"admin:{session.get('admin_name')}", "key_revoked",
+                       f"key={key_id}")
         return jsonify({"revoked": True})
 
     @app.route("/admin/api/devices", methods=["GET", "POST"])
     @require_admin
     def admin_devices():
-        conn = db.get_db()
+        store = _store()
         if request.method == "POST":
             if not _check_csrf():
                 return jsonify({"error": "bad_csrf"}), 403
             data = request.get_json(silent=True) or {}
             name = str(data.get("name", "Termux Phone"))[:80]
             device_id, secret = generate_device_credentials()
-            conn.execute(
-                "INSERT INTO devices(device_id, name, secret, status, created_at)"
-                " VALUES(?,?,?,'active',?)",
-                (device_id, name, secret, utcnow_iso()))
-            audit(conn, f"admin:{session.get('admin_name')}", "device_created", device_id)
-            conn.commit()
+            store.create_device(device_id, name, secret)
+            store.audit(f"admin:{session.get('admin_name')}", "device_created",
+                        device_id)
             return jsonify({"device_id": device_id, "secret": secret,
                             "name": name}), 201
-        rows = conn.execute(
-            "SELECT id, device_id, name, status, last_seen_at, created_at"
-            " FROM devices ORDER BY id DESC").fetchall()
-        return jsonify({"devices": [dict(r) for r in rows]})
+        return jsonify({"devices": store.list_devices()})
 
     @app.post("/admin/api/devices/<device_id>/status")
     @require_admin
@@ -1023,29 +895,27 @@ def create_app() -> Flask:
         status = data.get("status")
         if status not in ("active", "revoked"):
             return jsonify({"error": "bad status"}), 400
-        conn = db.get_db()
-        conn.execute("UPDATE devices SET status=? WHERE device_id=?", (status, device_id))
-        audit(conn, f"admin:{session.get('admin_name')}", "device_status",
-              f"{device_id} -> {status}")
-        conn.commit()
+        _store().set_device_status(device_id, status)
+        _store().audit(f"admin:{session.get('admin_name')}", "device_status",
+                       f"{device_id} -> {status}")
         return jsonify({"updated": True})
 
     @app.route("/admin/api/settings", methods=["GET", "POST"])
     @require_admin
     def admin_settings():
-        conn = db.get_db()
+        store = _store()
         if request.method == "POST":
             if not _check_csrf():
                 return jsonify({"error": "bad_csrf"}), 403
             data = request.get_json(silent=True) or {}
             if "gateway_name" in data:
-                set_setting(conn, "gateway_name", str(data["gateway_name"])[:80])
+                store.set_setting("gateway_name", str(data["gateway_name"])[:80])
             if "session_ttl_minutes" in data:
-                set_setting(conn, "session_ttl_minutes",
-                            str(max(5, min(safe_int(data["session_ttl_minutes"], 15), 120))))
+                store.set_setting("session_ttl_minutes", str(max(5, min(
+                    safe_int(data["session_ttl_minutes"], 15), 120))))
             if "max_verify_attempts" in data:
-                set_setting(conn, "max_verify_attempts",
-                            str(max(3, min(safe_int(data["max_verify_attempts"], 10), 50))))
+                store.set_setting("max_verify_attempts", str(max(3, min(
+                    safe_int(data["max_verify_attempts"], 10), 50))))
             if "provider_wallets" in data:
                 try:
                     wallets = data["provider_wallets"]
@@ -1060,37 +930,47 @@ def create_app() -> Flask:
                             "type": "Agent" if cfg.get("type") == "Agent" else "Personal",
                             "enabled": bool(cfg.get("enabled")),
                         }
-                    set_setting(conn, "provider_wallets", json.dumps(clean))
+                    store.set_setting("provider_wallets", json.dumps(clean))
                 except (AssertionError, AttributeError, TypeError):
                     return jsonify({"error": "invalid provider_wallets"}), 400
-            audit(conn, f"admin:{session.get('admin_name')}", "settings_updated", "")
-            conn.commit()
-        return jsonify({k: v for k, v in
-                        ((r["key"], r["value"]) for r in conn.execute(
-                            "SELECT key, value FROM settings"))})
+            store.audit(f"admin:{session.get('admin_name')}", "settings_updated", "")
+        return jsonify(store.all_settings())
 
     @app.get("/admin/api/audit")
     @require_admin
     def admin_audit():
-        rows = db.get_db().execute(
-            "SELECT actor, action, meta, created_at FROM audit_logs"
-            " ORDER BY id DESC LIMIT 100").fetchall()
-        return jsonify({"logs": [dict(r) for r in rows]})
+        return jsonify({"logs": _store().list_audit(100)})
 
     # ==================================================================
     # MISC
     # ==================================================================
 
+    def _sms_view(r: dict) -> dict:
+        keep = ("id", "provider", "sender", "trxid", "device_id", "status",
+                "matched_session_id", "created_at", "order_id", "merchant")
+        out = {k: r.get(k) for k in keep}
+        out["amount_bdt"] = paisa_to_bdt(r["amount_paisa"])
+        return out
+
+    def _session_view(r: dict) -> dict:
+        keep = ("id", "order_id", "merchant", "currency", "status", "provider",
+                "trxid", "payer_wallet", "attempts", "customer_name",
+                "created_at", "paid_at")
+        out = {k: r.get(k) for k in keep}
+        out["amount_bdt"] = paisa_to_bdt(r["amount_paisa"])
+        out["amount_paisa"] = r["amount_paisa"]
+        return out
+
     @app.get("/")
     def index():
-        conn = db.get_db()
         return render_template(
             "index.html",
-            gateway_name=get_setting(conn, "gateway_name", "MFS Gateway"))
+            gateway_name=_store().get_setting("gateway_name", "MFS Gateway"))
 
     @app.get("/healthz")
     def healthz():
-        return jsonify({"status": "ok", "time": utcnow_iso()})
+        return jsonify({"status": "ok", "time": utcnow_iso(),
+                        "backend": os.environ.get("GATEWAY_DB_BACKEND", "sqlite")})
 
     @app.errorhandler(404)
     def not_found(_e):
@@ -1110,15 +990,15 @@ def main():
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if "--init-demo" in sys.argv:
-        creds = db.ensure_demo_data(app)
+        from .demo import ensure_demo_data
+        creds = ensure_demo_data(app)
         out = json.dumps(creds, indent=2)
-        creds_file = os.path.join(os.path.dirname(app.config["DATABASE"]),
-                                  "demo_credentials.json")
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        data_dir = os.environ.get("GATEWAY_DATA_DIR", os.path.join(root, "data"))
+        creds_file = os.path.join(data_dir, "demo_credentials.json")
         with open(creds_file, "w", encoding="utf-8") as fh:
             fh.write(out)
         print("Demo credentials written to", creds_file, "\n", out)
-        if not os.environ.get("GATEWAY_DEMO_NO_SERVER"):
-            pass  # fall through and start the server
     port = int(os.environ.get("PORT", "8000"))
     app.run(host="0.0.0.0", port=port, threaded=True)
 

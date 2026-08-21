@@ -1,2 +1,8 @@
 # Central backend — the Termux listener itself is stdlib-only.
 Flask>=3.0,<4.0
+
+# MongoDB backend (GATEWAY_DB_BACKEND=mongodb).
+pymongo>=4.6,<5.0
+
+# Dev/test only:
+#   mongomock          -> runs tests/test_mongo_store.py without a real mongod

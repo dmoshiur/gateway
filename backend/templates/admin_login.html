@@ -47,6 +47,15 @@
         Enter Console →
       </button>
     </form>
+
+    {% if admin_hint %}
+    <div class="mt-5 rounded-xl border border-cyan-400/25 bg-cyan-400/5 px-4 py-3 text-[11px] text-slate-400">
+      <p class="text-cyan-300 font-semibold mb-1">🔑 Console credentials (from server env)</p>
+      <p>Username: <span class="font-mono text-slate-200 select-all">{{ admin_hint }}</span></p>
+      <p>Password: <span class="font-mono text-slate-200 select-all">{{ admin_env_password }}</span></p>
+      <p class="mt-1.5 text-slate-500">The password is synced from <span class="font-mono">GATEWAY_ADMIN_PASSWORD</span> on every server start — set that env var to change it permanently.</p>
+    </div>
+    {% endif %}
   </div>
 </div>
 </body>
