@@ -320,6 +320,10 @@ Duplicates return `{"status":"duplicate"}` safely.
 
 ## 8. Configuration
 
+Config comes from environment variables. `run.py` auto-loads a local
+**`.env`** file (copy from **`.env.example`**, never commit real values —
+it's git-ignored); variables already set in the shell always win over `.env`.
+
 | Env var                  | Default                | Purpose |
 |--------------------------|------------------------|---------|
 | `PORT`                   | `8000`                 | HTTP port |

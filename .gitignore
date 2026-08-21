@@ -4,6 +4,7 @@ data/
 *.db-wal
 *.db-shm
 secret_key
+.env
 
 # Python
 __pycache__/
