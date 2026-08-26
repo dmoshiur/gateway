@@ -138,7 +138,13 @@ def create_app() -> Flask:
     def _security_headers(resp):
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        resp.headers["Cache-Control"] = "no-store"  # payment pages: never cache
+        # Buyer/session responses must never be stored by a browser or proxy,
+        # but presentation assets can be briefly cached so repeat visits stay
+        # instant. The checkout itself keeps its critical CSS/JS inline.
+        if request.path.startswith(f"{app.static_url_path}/"):
+            resp.headers["Cache-Control"] = "public, max-age=86400"
+        else:
+            resp.headers["Cache-Control"] = "no-store"
         return resp
 
     @app.context_processor
@@ -264,7 +270,7 @@ def create_app() -> Flask:
             "provider": sess.get("provider"),
             "expires_at": sess["expires_at"],
             "methods": methods,
-            "gateway_name": store.get_setting("gateway_name", "MFS Gateway"),
+            "gateway_name": store.get_setting("gateway_name", "UniquePay BD"),
         }
 
     def _dispatch_ipn(sess: dict) -> None:
@@ -454,9 +460,25 @@ def create_app() -> Flask:
 
     @app.get("/checkout/<session_id>")
     def checkout_page(session_id):
+        """Render the mobile payment-method chooser for a checkout session."""
         if not SESSION_RE.fullmatch(session_id or ""):
             abort(404)
-        return render_template("checkout.html", session_id=session_id)
+        return render_template("checkout.html", session_id=session_id, provider=None)
+
+    @app.get("/checkout/<session_id>/<provider>")
+    def checkout_provider_page(session_id, provider):
+        """Render a provider-specific checkout URL while keeping one fast UI bundle.
+
+        The template rechecks the enabled methods from the session API before
+        showing the provider form, so hand-crafted URLs cannot select a
+        disabled payment method.
+        """
+        if not SESSION_RE.fullmatch(session_id or ""):
+            abort(404)
+        provider = provider.lower().strip()
+        if provider not in {"bkash", "nagad", "upay", "rocket"}:
+            abort(404)
+        return render_template("checkout.html", session_id=session_id, provider=provider)
 
     @app.get("/api/v1/checkout/<session_id>")
     def checkout_state(session_id):
@@ -963,7 +985,7 @@ def create_app() -> Flask:
     def index():
         return render_template(
             "index.html",
-            gateway_name=_store().get_setting("gateway_name", "MFS Gateway"))
+            gateway_name=_store().get_setting("gateway_name", "UniquePay BD"))
 
     @app.get("/healthz")
     def healthz():

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Superadmin · MFS Gateway</title>
+<title>Superadmin · UniquePay BD</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = { theme: { extend: { fontFamily: { display: ['"Space Grotesk"','sans-serif'] },
@@ -45,6 +45,7 @@ tailwind.config = { theme: { extend: { fontFamily: { display: ['"Space Grotesk"'
   .live-dot { animation: pulse 1.6s ease-out infinite; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(34,255,224,.5)} 75%{box-shadow:0 0 0 9px rgba(34,255,224,0)} 100%{box-shadow:0 0 0 0 rgba(34,255,224,0)} }
 </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='light-theme.css') }}">
 </head>
 <body class="bg-ink text-slate-200 min-h-screen" data-csrf="{{ csrf_token }}">
 <div class="grid-bg fixed inset-0 pointer-events-none"></div>
@@ -57,7 +58,7 @@ tailwind.config = { theme: { extend: { fontFamily: { display: ['"Space Grotesk"'
     <div class="flex items-center gap-3 px-3 py-4 mb-2">
       <div class="w-10 h-10 rounded-xl glass flex items-center justify-center text-neon font-display font-bold shadow-[0_0_24px_-6px_rgba(34,255,224,.6)]">৳</div>
       <div>
-        <p class="font-display font-bold text-white text-sm">MFS Gateway</p>
+        <p class="font-display font-bold text-white text-sm">UniquePay BD</p>
         <p class="text-[10px] uppercase tracking-widest text-rose-400">Superadmin</p>
       </div>
     </div>
@@ -78,7 +79,7 @@ tailwind.config = { theme: { extend: { fontFamily: { display: ['"Space Grotesk"'
   <!-- Content -->
   <main class="flex-1 p-4 sm:p-8 max-w-6xl mx-auto w-full">
     <div class="md:hidden flex items-center justify-between mb-4 glass rounded-2xl px-4 py-3">
-      <p class="font-display font-bold text-white">MFS Gateway · Admin</p>
+      <p class="font-display font-bold text-white">UniquePay BD · Admin</p>
       <select onchange="showTab(this.value)" class="bg-black/40 border border-white/10 rounded-lg text-sm px-2 py-1.5">
         <option value="overview">Overview</option><option value="sms">SMS Logs</option>
         <option value="sessions">Sessions</option><option value="merchants">Merchants</option>
@@ -397,7 +398,7 @@ async function loadKeys() {
 
 async function loadSettings() {
   const d = await api('/admin/api/settings');
-  el('set_name').value = d.gateway_name || 'MFS Gateway';
+  el('set_name').value = d.gateway_name || 'UniquePay BD';
   el('set_ttl').value = d.session_ttl_minutes || '15';
   el('set_attempts').value = d.max_verify_attempts || '10';
   let wallets = {}; try { wallets = JSON.parse(d.provider_wallets || '{}'); } catch(e) {}
