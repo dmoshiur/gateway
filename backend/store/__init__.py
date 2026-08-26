@@ -1,15 +1,16 @@
-"""
-MongoDB persistence layer for the gateway.
+"""PostgreSQL persistence layer for the gateway.
 
 The app speaks to a document-style store interface (plain dicts in/out),
-implemented by ``MongoStore`` (pymongo). MongoDB is the **only** storage
-engine — configured with one single-line connection URI:
+implemented by ``PostgresStore`` on top of SQLAlchemy Core with the psycopg 3
+driver. PostgreSQL is the **only** production storage engine, configured
+with one single-line connection URL:
 
-  MONGO_URI=mongodb://localhost:27017/mfs_gateway
-  MONGO_URI=mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/mfs_gateway
+  DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/mfs_gateway
 
-The database name is embedded in the URI path (falls back to
-``mfs_gateway`` when the URI has no path segment).
+Plain ``postgresql://`` / ``postgres://`` URLs are auto-upgraded to the
+psycopg driver. For tests/CI the identical store code runs against an
+in-memory SQLite database (``DATABASE_URL=sqlite://``) — same SQLAlchemy
+code path, no PostgreSQL server required for tests/CI.
 
 Money is integer paisa; timestamps are UTC ISO-8601 strings (lexicographic
 ordering matches chronological ordering for the formats we write).
@@ -46,11 +47,11 @@ DEFAULT_SETTINGS = {
 
 
 class Store:
-    """Interface contract (documented; implemented by MongoStore)."""
+    """Interface contract (documented; implemented by PostgresStore)."""
 
     # --- lifecycle ---------------------------------------------------------
     def init(self, app) -> None:
-        """Create indexes, seed default settings + deterministic admin."""
+        """Create tables/indexes, seed default settings + deterministic admin."""
         raise NotImplementedError
 
     def close(self) -> None:  # pragma: no cover - trivial
@@ -124,38 +125,19 @@ class Store:
     def list_paid_recent(self, limit: int = 12) -> list: ...  # enriched
 
 
-def _db_name_from_uri(uri: str) -> str:
-    """Extract the database name embedded in a mongodb:// / mongodb+srv:// URI.
-
-    Pure string parsing — deliberately NOT pymongo.parse_uri, which performs
-    live DNS SRV lookups for mongodb+srv:// (slow/offline-hostile at boot).
-    """
-    try:
-        tail = uri.split("://", 1)[1]                 # drop scheme
-        if "/" not in tail:
-            return "mfs_gateway"
-        path = tail.split("/", 1)[1]                  # drop auth@hosts
-        name = path.split("?", 1)[0].strip("/")       # drop ?options + slashes
-        return name or "mfs_gateway"
-    except IndexError:
-        return "mfs_gateway"
+DEFAULT_DATABASE_URL = "postgresql+psycopg://localhost:5432/mfs_gateway"
 
 
 def make_store(app) -> Store:
-    """Build the MongoDB store. Single-line config: MONGO_URI.
+    """Build the PostgreSQL store. Single-line config: DATABASE_URL.
 
-    GATEWAY_MONGO_MOCK=1 swaps the client factory to mongomock (dev/CI shim —
-    restricted sandboxes with no reachable server; never in production).
+    * Production:  DATABASE_URL=postgresql+psycopg://user:pass@host/db
+      (plain ``postgresql://`` / ``postgres://`` URLs are auto-upgraded).
+    * Tests/CI:    DATABASE_URL=sqlite://  — in-memory SQLite through the
+      same SQLAlchemy code path (restricted sandboxes with no PostgreSQL
+      server; never in production).
     """
-    from . import mongo_store
+    from . import postgres_store
 
-    mock = os.environ.get("GATEWAY_MONGO_MOCK") == "1"
-    if mock:
-        import mongomock
-        mongo_store.MONGO_CLIENT_FACTORY = mongomock.MongoClient
-
-    uri = os.environ.get("MONGO_URI",
-                         "mongodb://localhost:27017/mfs_gateway")
-    store = mongo_store.MongoStore(uri=uri, db_name=_db_name_from_uri(uri),
-                                   mocked=mock)
-    return store
+    url = os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
+    return postgres_store.PostgresStore(url=url)

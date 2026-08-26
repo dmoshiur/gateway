@@ -1,4 +1,4 @@
-"""API + security flow tests — MongoDB store (in-memory transport for CI).
+"""API + security flow tests — PostgreSQL store (in-memory SQLite for CI).
 
 Run:  python tests/test_api_flows.py
 """
