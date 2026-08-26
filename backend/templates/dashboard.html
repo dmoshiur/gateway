@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Merchant Dashboard · MFS Gateway</title>
+<title>Merchant Dashboard · UniquePay BD</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = { theme: { extend: { fontFamily: { display: ['"Space Grotesk"','sans-serif'] },
@@ -33,6 +33,7 @@ tailwind.config = { theme: { extend: { fontFamily: { display: ['"Space Grotesk"'
   .modal-bg { background: rgba(3,4,12,.8); backdrop-filter: blur(6px); }
   pre { white-space: pre-wrap; word-break: break-all; }
 </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='light-theme.css') }}">
 </head>
 <body class="bg-ink text-slate-200 min-h-screen" data-csrf="{{ csrf_token }}">
 <div class="grid-bg fixed inset-0 pointer-events-none"></div>

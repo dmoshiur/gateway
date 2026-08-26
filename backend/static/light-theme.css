@@ -1,0 +1,35 @@
+/* Shared light surface for console and authentication pages.
+   Checkout owns a compact critical CSS bundle so the buyer flow is independent
+   of third-party assets. */
+:root { color-scheme: light; }
+body {
+  color: #193550 !important;
+  background: #f4f9fd !important;
+}
+.glass {
+  background: #fff !important;
+  border-color: #d7e7f3 !important;
+  box-shadow: 0 9px 26px rgba(28, 80, 127, .08) !important;
+}
+.grid-bg {
+  opacity: .72;
+  background-image: linear-gradient(rgba(18,152,232,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(18,152,232,.055) 1px, transparent 1px) !important;
+}
+[class~="text-white"], [class*="text-slate-200"], [class*="text-slate-300"] { color: #193550 !important; }
+[class*="text-slate-400"], [class*="text-slate-500"], [class*="text-slate-600"] { color: #667f94 !important; }
+[class*="bg-black"], [class*="bg-ink"] { background-color: #f4f9fd !important; }
+[class*="border-white"] { border-color: #d7e7f3 !important; }
+input, select, textarea {
+  color: #193550 !important;
+  background: #fff !important;
+  border-color: #c8ddea !important;
+}
+.btn-neon {
+  color: #fff !important;
+  background: linear-gradient(135deg, #16a4ea, #087bce) !important;
+  box-shadow: 0 7px 17px rgba(18, 152, 232, .22) !important;
+}
+.btn-ghost { color: #1774b8 !important; border-color: #bfdaec !important; background: #fff !important; }
+.btn-danger { color: #c63343 !important; border-color: #f3c3c9 !important; background: #fff6f7 !important; }
+[class*="bg-white/"] { background-color: #f8fcff !important; }
+/* Brand and status colors remain deliberate, high contrast accents. */

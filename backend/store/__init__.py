@@ -31,7 +31,7 @@ def utcnow_iso() -> str:
 
 
 DEFAULT_SETTINGS = {
-    "gateway_name": "MFS Gateway",
+    "gateway_name": "UniquePay BD",
     "session_ttl_minutes": "15",
     "max_verify_attempts": "10",
     "provider_wallets": json.dumps({

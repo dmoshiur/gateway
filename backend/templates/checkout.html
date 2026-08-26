@@ -1,492 +1,459 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="robots" content="noindex">
-<title>Secure Checkout</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-tailwind.config = { theme: { extend: {
-  fontFamily: { display: ['"Space Grotesk"', 'sans-serif'], body: ['Inter', 'sans-serif'] },
-  colors: { ink: '#05060f', panel: 'rgba(15,18,38,.72)', neon: '#22ffe0', hot: '#e2136e' }
-}}};
-</script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-<style>
-  body { font-family: Inter, sans-serif; }
-  .grid-bg {
-    background-image:
-      linear-gradient(rgba(34,255,224,.055) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(34,255,224,.055) 1px, transparent 1px);
-    background-size: 44px 44px;
-    mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 30%, transparent 100%);
-  }
-  .glass { background: rgba(15,18,38,.72); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
-           border: 1px solid rgba(255,255,255,.08); }
-  .neon-line { background: linear-gradient(90deg, transparent, #22ffe0 30%, #e2136e 70%, transparent); height: 1px; }
-  .tile { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; cursor: pointer; }
-  .tile:hover { transform: translateY(-3px); border-color: rgba(34,255,224,.55); box-shadow: 0 8px 30px -8px rgba(34,255,224,.35); }
-  .tile.active { border-color: var(--brand, #22ffe0); box-shadow: 0 0 0 1px var(--brand, #22ffe0), 0 10px 34px -10px var(--brand, #22ffe0); }
-  .tab-btn.active { color: #05060f; background: linear-gradient(120deg, #22ffe0, #7ce7ff); box-shadow: 0 4px 22px -6px rgba(34,255,224,.7); }
-  .spinner { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(34,255,224,.15);
-             border-top-color: #22ffe0; animation: spin 0.8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .shake { animation: shake .45s ease; }
-  @keyframes shake { 20%{transform:translateX(-8px)} 40%{transform:translateX(7px)} 60%{transform:translateX(-5px)} 80%{transform:translateX(4px)} }
-  .check-path { stroke-dasharray: 120; stroke-dashoffset: 120; animation: draw .7s .1s ease forwards; }
-  .check-circle { stroke-dasharray: 320; stroke-dashoffset: 320; animation: draw .8s ease forwards; }
-  @keyframes draw { to { stroke-dashoffset: 0; } }
-  .pulse-ring { animation: pulse 1.8s ease-out infinite; }
-  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(34,255,224,.45)} 80%{box-shadow:0 0 0 22px rgba(34,255,224,0)} 100%{box-shadow:0 0 0 0 rgba(34,255,224,0)} }
-  .fade-up { animation: fadeUp .4s ease both; }
-  @keyframes fadeUp { from{opacity:0; transform:translateY(14px)} to{opacity:1; transform:none} }
-  .modal-bg { background: rgba(3,4,12,.78); backdrop-filter: blur(6px); }
-  input:focus { outline: none; }
-  .copy-chip { transition: all .15s ease; }
-  .copy-chip:hover { border-color: #22ffe0; color: #22ffe0; }
-  ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
-</style>
-</head>
-<body class="bg-ink text-slate-200 min-h-screen relative overflow-x-hidden" data-sid="{{ session_id }}">
-
-<div class="grid-bg absolute inset-0 pointer-events-none"></div>
-<div class="absolute -top-40 -left-40 w-[480px] h-[480px] rounded-full pointer-events-none"
-     style="background: radial-gradient(circle, rgba(226,19,110,.22), transparent 65%)"></div>
-<div class="absolute -bottom-52 -right-40 w-[520px] h-[520px] rounded-full pointer-events-none"
-     style="background: radial-gradient(circle, rgba(34,255,224,.16), transparent 65%)"></div>
-
-<div class="relative z-10 max-w-lg mx-auto px-4 py-6 sm:py-10">
-
-  <!-- Header -->
-  <div class="flex items-center justify-between mb-5">
-    <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-xl glass flex items-center justify-center text-neon font-display font-bold text-lg shadow-[0_0_24px_-6px_rgba(34,255,224,.6)]">৳</div>
-      <div>
-        <p id="gatewayName" class="font-display font-semibold text-white text-sm leading-tight">MFS Gateway</p>
-        <p class="text-[11px] text-slate-400 tracking-wide uppercase">Secure Checkout v1</p>
-      </div>
-    </div>
-    <div id="timerChip" class="glass rounded-full px-3.5 py-1.5 text-xs font-mono text-amber-300 flex items-center gap-1.5">
-      <span class="w-1.5 h-1.5 rounded-full bg-amber-300 animate-pulse"></span><span id="countdown">--:--</span>
-    </div>
-  </div>
-
-  <!-- Main card -->
-  <div id="mainCard" class="glass rounded-3xl overflow-hidden fade-up">
-    <div class="neon-line"></div>
-    <div class="p-5 sm:p-7">
-
-      <!-- Order summary -->
-      <div class="flex items-start justify-between">
-        <div>
-          <p class="text-[11px] uppercase tracking-widest text-slate-400">Paying</p>
-          <h1 id="merchantName" class="font-display text-lg font-semibold text-white mt-0.5">&nbsp;</h1>
-          <p class="text-xs text-slate-400 mt-1">Order <span id="orderId" class="font-mono text-slate-300"></span></p>
-        </div>
-        <div class="text-right">
-          <p class="text-[11px] uppercase tracking-widest text-slate-400">Amount</p>
-          <p class="font-display text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-neon to-cyan-300 mt-0.5">
-            ৳<span id="amount">0.00</span>
-          </p>
-          <p class="text-[11px] text-slate-500" id="currency">BDT</p>
-        </div>
-      </div>
-
-      <!-- Tabs -->
-      <div class="mt-6 glass rounded-2xl p-1.5 grid grid-cols-3 gap-1 text-[13px] font-medium text-slate-300">
-        <button class="tab-btn rounded-xl py-2.5 transition" data-tab="card" onclick="switchTab('card')">💳 Card</button>
-        <button class="tab-btn active rounded-xl py-2.5 transition" data-tab="mfs" onclick="switchTab('mfs')">📱 Mobile Banking</button>
-        <button class="tab-btn rounded-xl py-2.5 transition" data-tab="net" onclick="switchTab('net')">🏦 Net Banking</button>
-      </div>
-
-      <!-- MFS panel -->
-      <div id="panel-mfs" class="tab-panel mt-5">
-        <p class="text-xs text-slate-400 mb-3 flex items-center gap-2">
-          <span class="w-1.5 h-1.5 rounded-full bg-neon inline-block"></span>
-          Select your wallet provider — pay manually, then confirm with the TrxID
-        </p>
-        <div id="providerGrid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
-
-        <!-- Instruction block -->
-        <div id="payInstructions" class="hidden mt-5 rounded-2xl border border-white/10 bg-white/[.03] p-4 fade-up">
-          <div class="flex items-center gap-2.5 mb-3">
-            <div id="piBadge" class="w-9 h-9 rounded-xl flex items-center justify-center font-display font-bold text-white text-sm"></div>
-            <div>
-              <p class="font-semibold text-white text-sm" id="piTitle"></p>
-              <p class="text-[11px] text-slate-400" id="piSub"></p>
-            </div>
-          </div>
-          <ol class="space-y-2.5 text-[13px] text-slate-300">
-            <li class="flex gap-2.5"><span class="step-no">1</span>
-              <span id="piStep1"></span></li>
-            <li class="flex gap-2.5"><span class="step-no">2</span>
-              <span>Send <b class="text-white">৳<span id="piAmount"></span></b> to the number below
-                (<span id="piType" class="text-slate-400"></span>):</span></li>
-          </ol>
-          <div class="mt-3 flex items-center justify-between gap-3 rounded-xl bg-black/40 border border-white/10 px-4 py-3">
-            <span id="piNumber" class="font-mono text-xl tracking-wider text-neon select-all"></span>
-            <button class="copy-chip text-[11px] font-semibold uppercase tracking-wider border border-white/15 rounded-lg px-3 py-1.5 text-slate-300"
-                    onclick="copyText(document.getElementById('piNumber').textContent, this)">Copy</button>
-          </div>
-          <ol start="3" class="space-y-2.5 text-[13px] text-slate-300 mt-3">
-            <li class="flex gap-2.5"><span class="step-no">3</span>
-              <span>Use your <b>Order ID</b> as reference: <span id="piOrderRef" class="font-mono text-neon"></span></span></li>
-            <li class="flex gap-2.5"><span class="step-no">4</span>
-              <span>Come back and tap <b class="text-white">“I Paid — Verify”</b> with your wallet number &amp; TrxID from the confirmation SMS.</span></li>
-          </ol>
-          <button id="verifyBtn"
-                  class="mt-4 w-full py-3.5 rounded-2xl font-display font-semibold text-ink text-sm tracking-wide transition hover:brightness-110 active:scale-[.99]"
-                  style="background: linear-gradient(120deg, var(--brand,#22ffe0), #7ce7ff); box-shadow: 0 8px 28px -8px var(--brand,#22ffe0)"
-                  onclick="openVerifyModal()">I Paid — Verify Payment</button>
-        </div>
-      </div>
-
-      <!-- Card panel -->
-      <div id="panel-card" class="tab-panel hidden mt-5">
-        <div class="rounded-2xl border border-white/10 bg-white/[.03] p-5">
-          <div class="flex items-center justify-between mb-4">
-            <p class="text-sm font-semibold text-white">Debit / Credit Card</p>
-            <div class="flex gap-1.5 text-[10px] font-bold">
-              <span class="px-2 py-1 rounded-md bg-white/10">VISA</span>
-              <span class="px-2 py-1 rounded-md bg-white/10">Mastercard</span>
-              <span class="px-2 py-1 rounded-md bg-white/10">Amex</span>
-            </div>
-          </div>
-          <div class="space-y-3 opacity-60 pointer-events-none select-none">
-            <input disabled class="w-full glass rounded-xl px-4 py-3 text-sm" placeholder="Card number  ••••  ••••  ••••  ••••">
-            <div class="grid grid-cols-2 gap-3">
-              <input disabled class="glass rounded-xl px-4 py-3 text-sm" placeholder="MM / YY">
-              <input disabled class="glass rounded-xl px-4 py-3 text-sm" placeholder="CVC">
-            </div>
-            <button disabled class="w-full py-3 rounded-xl bg-white/10 text-slate-400 text-sm font-semibold">Pay ৳<span id="cardAmount"></span></button>
-          </div>
-          <p class="mt-3 text-[11px] text-amber-300/90 flex items-center gap-1.5">⚠ Card channel is onboarding — please use <b>Mobile Banking</b>.</p>
-        </div>
-      </div>
-
-      <!-- Net banking panel -->
-      <div id="panel-net" class="tab-panel hidden mt-5">
-        <div class="rounded-2xl border border-white/10 bg-white/[.03] p-5">
-          <p class="text-sm font-semibold text-white mb-3">Internet Banking</p>
-          <div class="grid grid-cols-3 gap-2.5 text-[11px] text-slate-400" id="bankGrid"></div>
-          <p class="mt-3 text-[11px] text-amber-300/90 flex items-center gap-1.5">⚠ Bank rails are onboarding — please use <b>Mobile Banking</b>.</p>
-        </div>
-      </div>
-
-      <!-- Status / alerts -->
-      <div id="alertBox" class="hidden mt-5 rounded-2xl px-4 py-3.5 text-sm fade-up"></div>
-
-      <!-- Confirming state -->
-      <div id="confirming" class="hidden mt-6 flex-col items-center gap-4 py-4">
-        <div class="spinner"></div>
-        <p class="text-sm text-slate-300 font-medium" id="confirmText">Contacting gateway…</p>
-        <p class="text-[11px] text-slate-500 -mt-2">Do not close this window</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- Success screen -->
-  <div id="successCard" class="hidden glass rounded-3xl overflow-hidden fade-up">
-    <div class="neon-line"></div>
-    <div class="p-8 flex flex-col items-center text-center">
-      <div class="w-24 h-24 rounded-full pulse-ring flex items-center justify-center bg-neon/10 border border-neon/40">
-        <svg viewBox="0 0 100 100" class="w-16 h-16">
-          <circle class="check-circle" cx="50" cy="50" r="44" fill="none" stroke="#22ffe0" stroke-width="4"/>
-          <path class="check-path" d="M30 52 L45 66 L72 38" fill="none" stroke="#22ffe0" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </div>
-      <h2 class="font-display text-2xl font-bold text-white mt-6">Payment Successful</h2>
-      <p class="text-slate-400 text-sm mt-1.5">৳<span id="successAmount"></span> received via <span id="successProvider" class="capitalize text-slate-200"></span></p>
-      <div class="mt-5 w-full rounded-2xl bg-black/40 border border-white/10 px-5 py-4 text-sm space-y-2">
-        <div class="flex justify-between"><span class="text-slate-500">TrxID</span><span id="successTrx" class="font-mono text-neon"></span></div>
-        <div class="flex justify-between"><span class="text-slate-500">Order</span><span id="successOrder" class="font-mono text-slate-200"></span></div>
-      </div>
-      <p id="redirectMsg" class="text-xs text-slate-500 mt-5 hidden">Redirecting back to the merchant in <span id="redirectIn" class="text-neon font-semibold">5</span>s…</p>
-    </div>
-  </div>
-
-  <!-- Expired screen -->
-  <div id="expiredCard" class="hidden glass rounded-3xl overflow-hidden fade-up">
-    <div class="neon-line" style="background:linear-gradient(90deg,transparent,#ff5470 40%,transparent)"></div>
-    <div class="p-8 flex flex-col items-center text-center">
-      <div class="w-20 h-20 rounded-full flex items-center justify-center bg-rose-500/10 border border-rose-400/40 text-4xl">⏱️</div>
-      <h2 class="font-display text-xl font-bold text-white mt-5" id="terminalTitle">Session Expired</h2>
-      <p class="text-slate-400 text-sm mt-1.5" id="terminalMsg">This payment window has closed. Please restart checkout from the merchant site.</p>
-    </div>
-  </div>
-
-  <!-- Verify modal -->
-  <div id="verifyModal" class="hidden fixed inset-0 z-50 modal-bg items-end sm:items-center justify-center p-0 sm:p-6">
-    <div class="glass w-full max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden fade-up">
-      <div class="px-6 py-4 flex items-center justify-between" id="modalHead" style="background: linear-gradient(120deg, var(--brand,#e2136e), rgba(0,0,0,.4))">
-        <div class="flex items-center gap-3">
-          <div id="modalBadge" class="w-9 h-9 rounded-xl bg-black/30 flex items-center justify-center font-display font-bold text-white text-sm"></div>
-          <div>
-            <p class="font-display font-semibold text-white text-sm" id="modalTitle"></p>
-            <p class="text-[11px] text-white/70">৳<span id="modalAmount"></span> • Order <span id="modalOrder" class="font-mono"></span></p>
-          </div>
-        </div>
-        <button onclick="closeVerifyModal()" class="text-white/70 hover:text-white text-xl leading-none px-2">✕</button>
-      </div>
-      <div class="p-6 space-y-4">
-        <div>
-          <label class="text-[11px] uppercase tracking-widest text-slate-400">Your <span id="modalProviderName"></span> wallet number</label>
-          <input id="walletInput" inputmode="numeric" maxlength="11" placeholder="01XXXXXXXXX"
-                 class="mt-1.5 w-full glass rounded-xl px-4 py-3.5 font-mono text-lg tracking-wider text-white placeholder-slate-600 focus:border-neon/60 border border-white/10">
-        </div>
-        <div>
-          <label class="text-[11px] uppercase tracking-widest text-slate-400">Transaction ID (TrxID)</label>
-          <input id="trxidInput" maxlength="24" placeholder="e.g. 9HK8A2X1LM"
-                 class="mt-1.5 w-full glass rounded-xl px-4 py-3.5 font-mono text-lg uppercase tracking-wider text-white placeholder-slate-600 focus:border-neon/60 border border-white/10">
-          <p class="text-[11px] text-slate-500 mt-1.5">📩 Find it in the confirmation SMS from your provider.</p>
-        </div>
-        <div id="modalError" class="hidden rounded-xl border border-rose-400/40 bg-rose-500/10 text-rose-300 text-xs px-4 py-3"></div>
-        <button id="modalSubmit" onclick="submitVerify()"
-                class="w-full py-3.5 rounded-2xl font-display font-semibold text-ink text-sm tracking-wide transition hover:brightness-110 active:scale-[.99] disabled:opacity-50"
-                style="background: linear-gradient(120deg, var(--brand,#22ffe0), #7ce7ff)">
-          Verify Payment
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <p class="text-center text-[11px] text-slate-600 mt-6">
-    🔒 256-bit signed webhook verification • <span id="footerGateway">MFS Gateway</span> checkout engine •
-    Order <span id="footerOrder" class="font-mono"></span>
-  </p>
-</div>
-
-<style>
-  .step-no { min-width: 20px; height: 20px; border-radius: 8px; background: rgba(34,255,224,.12);
-             color: #22ffe0; font-size: 11px; font-weight: 700; display: inline-flex;
-             align-items: center; justify-content: center; margin-top: 1px; }
-</style>
-
-{% raw %}
-<script>
-const SID = document.body.dataset.sid;
-const API = '/api/v1/checkout/' + SID;
-const PROVIDERS = {
-  bkash:  { label: 'bKash',      badge: 'bK', color: '#e2136e', ussd: 'Dial *247# or open the bKash app → "Send Money".' },
-  nagad:  { label: 'Nagad',      badge: 'N',  color: '#f6921e', ussd: 'Dial *167# or open the Nagad app → "Send Money".' },
-  rocket: { label: 'Rocket',     badge: 'R',  color: '#8c3494', ussd: 'Dial *322# or open the Rocket app → "Send Money".' },
-  upay:   { label: 'Upay',       badge: 'U',  color: '#ffd400', ussd: 'Dial *268# or open the Upay app → "Send Money".' },
-  tap:    { label: "Tap'n Pay",  badge: 'T',  color: '#00c9a7', ussd: 'Open the Tap\'n Pay app → "Send Money".' },
-  meghna: { label: 'Meghna Pay', badge: 'M',  color: '#ff5e5e', ussd: 'Open the Meghna Pay app → "Send Money".' },
-};
-const BANKS = ['City Bank','BRAC Bank','EBL','DBBL','Islami Bank','AB Bank','MTB','Prime Bank','UCB'];
-let S = null;             // session state
-let selected = null;      // selected provider key
-let pollTimer = null, pollLeft = 0;
-let countdownTimer = null;
-
-function el(id){ return document.getElementById(id); }
-function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-
-async function init() {
-  let res = await fetch(API);
-  if (!res.ok) { showTerminal('Invalid Session', 'This payment link is invalid or has been removed.'); return; }
-  S = await res.json();
-  el('gatewayName').textContent = S.gateway_name; el('footerGateway').textContent = S.gateway_name;
-  el('merchantName').textContent = S.merchant_name;
-  el('orderId').textContent = S.order_id; el('footerOrder').textContent = S.order_id;
-  el('amount').textContent = S.amount_bdt; el('cardAmount').textContent = S.amount_bdt;
-  el('currency').textContent = S.currency;
-
-  if (S.status === 'paid') { showSuccess(S.trxid || '', S.provider || ''); return; }
-  if (S.status === 'expired' || S.status === 'cancelled') {
-    showTerminal('Session Expired', 'This payment window has closed. Please restart checkout from the merchant site.'); return;
-  }
-
-  renderProviders();
-  renderBanks();
-  startCountdown(new Date(S.expires_at).getTime());
-}
-
-function renderProviders() {
-  const grid = el('providerGrid');
-  const keys = Object.keys(S.methods || {});
-  if (!keys.length) { grid.innerHTML = '<p class="col-span-full text-sm text-amber-300">No wallet providers enabled — contact the merchant.</p>'; return; }
-  grid.innerHTML = keys.map(k => {
-    const p = PROVIDERS[k] || { label: k, badge: (k[0]||'?').toUpperCase(), color: '#22ffe0' };
-    return `<button class="tile glass rounded-2xl p-3.5 flex flex-col items-center gap-2 text-center" style="--brand:${p.color}"
-        onclick="selectProvider('${k}')">
-      <span class="w-11 h-11 rounded-2xl flex items-center justify-center font-display font-bold text-white text-base"
-            style="background:linear-gradient(135deg, ${p.color}, rgba(0,0,0,.35)); box-shadow:0 6px 20px -6px ${p.color}">${p.badge}</span>
-      <span class="text-[13px] font-semibold text-slate-100">${esc(p.label)}</span>
-      <span class="text-[10px] uppercase tracking-wider text-slate-500">${esc(S.methods[k].type)}</span>
-    </button>`;
-  }).join('');
-}
-
-function renderBanks() {
-  el('bankGrid').innerHTML = BANKS.map(b =>
-    `<div class="rounded-xl border border-white/10 bg-white/[.02] px-3 py-3 text-center opacity-60">
-       <div class="text-lg mb-1">🏦</div>${esc(b)}</div>`).join('');
-}
-
-function switchTab(tab) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  ['mfs','card','net'].forEach(t => el('panel-' + t).classList.toggle('hidden', t !== tab));
-}
-
-function selectProvider(key) {
-  selected = key;
-  document.querySelectorAll('#providerGrid .tile').forEach((t, i) =>
-    t.classList.toggle('active', Object.keys(S.methods)[i] === key));
-  const p = PROVIDERS[key] || { label: key, badge: '?', color: '#22ffe0' };
-  const m = S.methods[key];
-  document.documentElement.style.setProperty('--brand', p.color);
-  el('piBadge').style.background = `linear-gradient(135deg, ${p.color}, rgba(0,0,0,.35))`;
-  el('piBadge').textContent = p.badge;
-  el('piTitle').textContent = 'Pay with ' + p.label;
-  el('piSub').textContent = (m.type === 'Agent' ? 'Cash-in to Agent number' : 'Send Money to Personal number');
-  el('piStep1').innerHTML = esc(p.ussd);
-  el('piAmount').textContent = S.amount_bdt;
-  el('piType').textContent = m.type === 'Agent' ? 'Cash In' : 'Send Money';
-  el('piNumber').textContent = m.number;
-  el('piOrderRef').textContent = S.order_id;
-  el('payInstructions').classList.remove('hidden');
-  el('payInstructions').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-function openVerifyModal() {
-  if (!selected) return;
-  const p = PROVIDERS[selected] || { label: selected, badge: '?', color: '#22ffe0' };
-  el('modalBadge').textContent = p.badge;
-  el('modalTitle').textContent = 'Confirm ' + p.label + ' Payment';
-  el('modalAmount').textContent = S.amount_bdt;
-  el('modalOrder').textContent = S.order_id;
-  el('modalProviderName').textContent = p.label;
-  el('modalError').classList.add('hidden');
-  el('walletInput').value = ''; el('trxidInput').value = '';
-  el('verifyModal').classList.remove('hidden');
-  el('verifyModal').classList.add('flex');
-  setTimeout(() => el('walletInput').focus(), 60);
-}
-function closeVerifyModal() { el('verifyModal').classList.add('hidden'); el('verifyModal').classList.remove('flex'); }
-
-function copyText(text, btn) {
-  navigator.clipboard?.writeText(text.trim()).then(() => {
-    const old = btn.textContent; btn.textContent = 'Copied ✓';
-    setTimeout(() => btn.textContent = old, 1400);
-  });
-}
-
-function setAlert(kind, msg) {
-  const box = el('alertBox');
-  const styles = {
-    info:  'border-cyan-400/40 bg-cyan-400/10 text-cyan-200',
-    warn:  'border-amber-400/40 bg-amber-400/10 text-amber-200',
-    error: 'border-rose-400/40 bg-rose-500/10 text-rose-300 shake',
-  };
-  box.className = 'mt-5 rounded-2xl px-4 py-3.5 text-sm fade-up border ' + (styles[kind] || styles.info);
-  box.textContent = msg;
-  box.classList.remove('hidden');
-}
-function clearAlert(){ el('alertBox').classList.add('hidden'); }
-
-async function submitVerify() {
-  const wallet = el('walletInput').value.trim();
-  const trxid = el('trxidInput').value.trim().toUpperCase();
-  const err = el('modalError');
-  err.classList.add('hidden');
-  if (!/^01\d{9}$/.test(wallet)) { err.textContent = 'Enter a valid 11-digit wallet number (01XXXXXXXXX).'; err.classList.remove('hidden'); return; }
-  if (!/^[A-Z0-9\-]{6,24}$/.test(trxid)) { err.textContent = 'Enter a valid TrxID (6–24 letters/digits).'; err.classList.remove('hidden'); return; }
-
-  closeVerifyModal(); clearAlert();
-  showConfirming('Verifying your transaction…');
-  let res, data;
-  try {
-    res = await fetch('/api/v1/checkout/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: SID, provider: selected, wallet, trxid })
-    });
-    data = await res.json();
-  } catch (e) { hideConfirming(); setAlert('error', 'Network error — please try again.'); return; }
-  hideConfirming();
-  handleVerifyResult(data);
-}
-
-function handleVerifyResult(data) {
-  switch (data.result) {
-    case 'paid':
-      showSuccess(data.trxid || '', data.provider || selected);
-      if (data.redirect) startRedirect(data.redirect);
-      break;
-    case 'pending':
-      setAlert('warn', '⏳ ' + (data.message || 'Waiting for the payment SMS…'));
-      startPolling();
-      break;
-    case 'amount_mismatch': setAlert('error', '❌ ' + data.message); break;
-    case 'used': setAlert('error', '❌ ' + (data.message || 'TrxID already used.')); break;
-    case 'locked': stopPolling(); showTerminal('Verification Locked', data.message); break;
-    case 'expired': stopPolling(); showTerminal('Session Expired', data.message); break;
-    default: setAlert('error', '❌ ' + (data.message || 'Verification failed.'));
-  }
-}
-
-function showConfirming(text) { el('confirmText').textContent = text; el('confirming').classList.remove('hidden'); el('confirming').classList.add('flex'); }
-function hideConfirming() { el('confirming').classList.add('hidden'); el('confirming').classList.remove('flex'); }
-
-function startPolling() {
-  stopPolling(); pollLeft = 24; // ~2 minutes @5s
-  showConfirming('Waiting for the SMS to arrive at the gateway… (auto-checking)');
-  pollTimer = setInterval(async () => {
-    pollLeft--;
-    try {
-      const r = await fetch(API + '/status'); const d = await r.json();
-      if (d.status === 'paid') { stopPolling(); hideConfirming(); showSuccess(d.trxid || '', d.provider || ''); if (d.redirect) startRedirect(d.redirect); return; }
-      if (d.status === 'expired' || d.status === 'cancelled') { stopPolling(); hideConfirming(); showTerminal('Session Expired', 'This payment window has closed.'); return; }
-    } catch (e) { /* keep polling */ }
-    if (pollLeft <= 0) { stopPolling(); hideConfirming(); setAlert('warn', 'Still not confirmed. If you completed payment, press “I Paid — Verify” again in a minute.'); }
-    else {
-      clearAlert();
-      setAlert('warn', `⏳ Not received yet — auto-checking (${pollLeft} tries left). If SMS arrived on the shop's phone, you'll be confirmed automatically.`);
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1597e8">
+  <meta name="robots" content="noindex, nofollow">
+  <title>UniquePay BD · Secure Payment</title>
+  <style>
+    :root {
+      --blue: #1298e8;
+      --blue-dark: #0877c9;
+      --blue-soft: #eaf7ff;
+      --page: #f4f9fd;
+      --ink: #14283e;
+      --muted: #6b7a8d;
+      --line: #d9e7f3;
+      --white: #fff;
+      --success: #179e62;
+      --danger: #dc3d4e;
+      --warning: #d99114;
+      --shadow: 0 9px 28px rgba(28, 80, 127, .09);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans Bengali", sans-serif;
     }
-  }, 5000);
-}
-function stopPolling(){ if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } hideConfirming(); }
+    * { box-sizing: border-box; }
+    html { background: var(--page); }
+    body { min-width: 320px; min-height: 100vh; margin: 0; color: var(--ink); background: var(--page); }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible { outline: 3px solid rgba(18, 152, 232, .25); outline-offset: 2px; }
+    .app { width: 100%; max-width: 480px; min-height: 100vh; margin: 0 auto; padding-bottom: calc(104px + env(safe-area-inset-bottom)); background: var(--page); }
+    .topbar { min-height: 72px; display: flex; align-items: center; justify-content: space-between; padding: 12px 17px; color: white; background: linear-gradient(135deg, #18aae9 0%, #087bcf 100%); box-shadow: 0 2px 12px rgba(0, 117, 202, .18); }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand-mark { width: 39px; height: 39px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 13px; color: #087ac9; background: #fff; box-shadow: 0 4px 9px rgba(0, 70, 125, .15); font-weight: 900; font-size: 23px; line-height: 1; }
+    .brand-name { font-weight: 800; font-size: 16px; letter-spacing: -.25px; }
+    .brand-subtitle { margin-top: 1px; color: rgba(255,255,255,.82); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
+    .icon-button { width: 38px; height: 38px; display: grid; place-items: center; padding: 0; color: #fff; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.28); border-radius: 50%; font-size: 25px; line-height: 1; transition: transform .16s ease, background .16s ease; }
+    .icon-button:hover { background: rgba(255,255,255,.25); }
+    .icon-button:active { transform: scale(.93); }
+    .content { padding: 17px 16px 0; }
+    .merchant-card, .card { background: var(--white); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
+    .merchant-card { display: flex; align-items: center; gap: 12px; padding: 13px; }
+    .merchant-art { width: 48px; height: 48px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 15px; color: #087aca; background: linear-gradient(135deg, #d8f4ff, #eef9ff); font-size: 23px; font-weight: 900; }
+    .merchant-copy { flex: 1; min-width: 0; }
+    .merchant-label { margin: 0; overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .merchant-meta { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+    .merchant-actions { display: flex; flex-direction: column; gap: 5px; }
+    .small-button { padding: 5px 8px; border: 1px solid #cfe3f2; border-radius: 8px; color: var(--blue-dark); background: #f8fcff; font-size: 10px; font-weight: 750; transition: background .16s ease, border-color .16s ease; }
+    .small-button:hover { border-color: var(--blue); background: var(--blue-soft); }
+    .section-heading { margin: 26px 0 11px; text-align: center; color: var(--ink); font-size: 18px; font-weight: 800; letter-spacing: -.3px; }
+    .pay-pill { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin-bottom: 18px; border-radius: 999px; color: #fff; background: linear-gradient(90deg, #139fe8, #087bcf); box-shadow: 0 6px 16px rgba(10, 130, 213, .2); font-size: 14px; font-weight: 750; }
+    .pay-pill span { display: grid; place-items: center; width: 19px; height: 19px; border-radius: 50%; background: rgba(255,255,255,.23); font-size: 12px; }
+    .method-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .method { min-height: 116px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 16px; color: var(--ink); background: #fff; box-shadow: 0 4px 12px rgba(31, 88, 135, .045); transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease; }
+    .method:hover { border-color: #88c9f1; box-shadow: 0 8px 18px rgba(20, 122, 194, .12); transform: translateY(-2px); }
+    .method:active, .method.is-selected { border: 2px solid var(--blue); box-shadow: 0 8px 20px rgba(18, 152, 232, .20); transform: scale(.97); }
+    .provider-logo { display: inline-flex; align-items: center; justify-content: center; min-width: 86px; height: 34px; padding: 0 6px; border-radius: 8px; font-weight: 900; font-size: 19px; letter-spacing: -1.05px; line-height: 1; }
+    .provider-logo.bkash { color: #e2136e; font-style: italic; }
+    .provider-logo.nagad { color: #ef721e; font-size: 18px; }
+    .provider-logo.upay { color: #3c3a9c; font-size: 20px; }
+    .provider-logo.rocket { color: #7e308f; font-size: 18px; }
+    .provider-logo.bkash::before { content: '◇'; padding-right: 3px; font-style: normal; font-size: 25px; }
+    .provider-logo.nagad::before { content: '◉'; padding-right: 4px; font-size: 17px; }
+    .provider-logo.upay::before { content: 'u'; width: 19px; height: 19px; display: grid; place-items: center; margin-right: 3px; border-radius: 50%; color: #fff; background: #31a9dc; font-size: 14px; font-style: normal; }
+    .provider-logo.rocket::before { content: '↗'; width: 20px; height: 20px; display: grid; place-items: center; margin-right: 3px; border-radius: 5px; color: #fff; background: #7e308f; font-size: 14px; }
+    .method-name { font-size: 13px; font-weight: 750; }
+    .method-unavailable { opacity: .48; filter: grayscale(.2); }
+    .micro-copy { margin: 17px auto 0; color: var(--muted); font-size: 11px; line-height: 1.55; text-align: center; }
+    .secure-note { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 13px; color: #52708a; font-size: 10px; }
+    .secure-note svg { width: 13px; height: 13px; fill: #1597e8; }
+    .sticky-pay { position: fixed; right: 0; bottom: 0; left: 0; z-index: 20; max-width: 480px; margin: auto; padding: 13px 16px calc(13px + env(safe-area-inset-bottom)); border: 1px solid #cfe8f9; border-bottom: 0; border-radius: 22px 22px 0 0; background: rgba(234, 247, 255, .97); box-shadow: 0 -8px 23px rgba(33, 106, 161, .09); backdrop-filter: blur(10px); }
+    .sticky-pay button { width: 100%; min-height: 51px; border: 0; border-radius: 14px; color: white; background: var(--blue); box-shadow: 0 6px 15px rgba(18, 152, 232, .25); font-size: 15px; font-weight: 800; transition: background .16s ease, transform .16s ease; }
+    .sticky-pay button:disabled { color: #7190a8; background: #d8eaf6; box-shadow: none; cursor: default; }
+    .sticky-pay button:not(:disabled):active { transform: scale(.985); }
+    .hidden { display: none !important; }
 
-function showSuccess(trxid, provider) {
-  stopPolling(); stopCountdown();
-  el('mainCard').classList.add('hidden'); el('timerChip').classList.add('hidden');
-  el('successAmount').textContent = S ? S.amount_bdt : '';
-  el('successProvider').textContent = (PROVIDERS[provider]?.label) || provider || 'MFS';
-  el('successTrx').textContent = trxid || '—';
-  el('successOrder').textContent = S ? S.order_id : '';
-  el('successCard').classList.remove('hidden');
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-}
+    /* Provider checkout */
+    .back-row { display: flex; align-items: center; gap: 9px; padding: 17px 0 5px; color: var(--blue-dark); font-size: 13px; font-weight: 750; }
+    .back-button { width: 31px; height: 31px; display: grid; place-items: center; padding: 0; border: 1px solid #cce5f6; border-radius: 10px; color: var(--blue-dark); background: #fff; font-size: 20px; }
+    .provider-header { padding: 24px 18px 19px; text-align: center; }
+    .provider-header .provider-logo { min-width: 146px; height: 48px; font-size: 29px; }
+    .provider-header .provider-logo.nagad, .provider-header .provider-logo.rocket { font-size: 27px; }
+    .provider-header .provider-logo.bkash::before { font-size: 37px; }
+    .provider-header .provider-logo.nagad::before { font-size: 24px; }
+    .provider-header .provider-logo.upay::before { width: 26px; height: 26px; font-size: 19px; }
+    .provider-header .provider-logo.rocket::before { width: 27px; height: 27px; font-size: 19px; }
+    .provider-title { margin: 13px 0 0; font-size: 21px; letter-spacing: -.45px; }
+    .provider-intro { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+    .amount-card { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding: 15px; border-radius: 15px; color: #0c5890; background: var(--blue-soft); }
+    .amount-card span { font-size: 12px; font-weight: 700; }
+    .amount-card strong { color: var(--blue-dark); font-size: 21px; letter-spacing: -.55px; }
+    .checkout-card { padding: 18px; }
+    .checkout-card + .checkout-card { margin-top: 13px; }
+    .subheading { display: flex; align-items: center; gap: 8px; margin: 0 0 13px; font-size: 15px; font-weight: 800; }
+    .subheading-index { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--blue-dark); background: var(--blue-soft); font-size: 11px; }
+    .instructions { display: grid; gap: 11px; margin: 0; padding: 0; list-style: none; counter-reset: instructions; }
+    .instructions li { position: relative; min-height: 23px; padding-left: 33px; color: #475c72; font-size: 12px; line-height: 1.48; counter-increment: instructions; }
+    .instructions li::before { position: absolute; top: 0; left: 0; width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; color: var(--blue-dark); background: var(--blue-soft); content: counter(instructions); font-size: 10px; font-weight: 800; }
+    .wallet-box { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 0 0; padding: 11px 11px 11px 13px; border: 1px dashed #9fcce8; border-radius: 12px; background: #f8fcff; }
+    .wallet-caption { color: var(--muted); font-size: 10px; }
+    .wallet-number { display: block; margin-top: 2px; color: #15324d; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 15px; font-weight: 800; letter-spacing: .6px; }
+    .copy-button { padding: 8px 10px; border: 1px solid #b7ddf4; border-radius: 9px; color: var(--blue-dark); background: #fff; font-size: 11px; font-weight: 750; }
+    .form-label { display: block; margin: 14px 0 6px; color: #34536d; font-size: 12px; font-weight: 750; }
+    .optional { color: var(--muted); font-weight: 500; }
+    .field { width: 100%; min-height: 48px; padding: 0 13px; border: 1px solid #cbddeb; border-radius: 12px; color: var(--ink); background: #fff; font-size: 15px; transition: border .16s ease, box-shadow .16s ease; }
+    .field::placeholder { color: #9aabba; }
+    .field:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(18, 152, 232, .12); outline: none; }
+    .field-hint { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .error-message { display: none; margin: 12px 0 0; padding: 11px 12px; border: 1px solid #f5c5cb; border-radius: 11px; color: #b72e3d; background: #fff1f2; font-size: 12px; line-height: 1.4; }
+    .error-message.show { display: block; }
+    .confirm-button, .primary-button, .secondary-button { width: 100%; min-height: 51px; border: 0; border-radius: 14px; font-size: 14px; font-weight: 800; transition: transform .16s ease, background .16s ease, opacity .16s ease; }
+    .confirm-button, .primary-button { color: #fff; background: linear-gradient(135deg, #18a8eb, #087bcf); box-shadow: 0 7px 17px rgba(18, 152, 232, .25); }
+    .confirm-button { margin-top: 17px; }
+    .confirm-button:disabled { opacity: .7; cursor: wait; }
+    .confirm-button:not(:disabled):active, .primary-button:active { transform: scale(.985); }
+    .secondary-button { margin-top: 10px; border: 1px solid #bfdaec; color: var(--blue-dark); background: #fff; }
+    .checkout-footer { margin: 16px 0 6px; color: #6d8599; font-size: 10px; text-align: center; }
 
-function startRedirect(url) {
-  el('redirectMsg').classList.remove('hidden');
-  let n = 5;
-  const t = setInterval(() => { n--; el('redirectIn').textContent = n; if (n <= 0) { clearInterval(t); window.location.href = url; } }, 1000);
-}
+    /* Status panels */
+    .state-view { padding: 28px 20px 8px; text-align: center; }
+    .state-icon { width: 78px; height: 78px; display: grid; place-items: center; margin: 3px auto 18px; border-radius: 50%; font-size: 37px; font-weight: 800; }
+    .state-icon.loading { border: 5px solid #d8effc; border-top-color: var(--blue); background: #f9fdff; color: transparent; animation: spin .85s linear infinite; }
+    .state-icon.success { border: 6px solid #c6efd9; color: #118953; background: #edfff5; }
+    .state-icon.failed { border: 6px solid #f8d4d8; color: var(--danger); background: #fff2f3; }
+    .state-icon.pending { border: 6px solid #f5e3bb; color: var(--warning); background: #fffaf0; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .state-title { margin: 0; color: var(--ink); font-size: 22px; letter-spacing: -.5px; }
+    .state-text { max-width: 315px; margin: 8px auto 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .receipt { margin-top: 22px; padding: 3px 15px; text-align: left; }
+    .receipt-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid #e7eef5; font-size: 12px; }
+    .receipt-row:last-child { border: 0; }
+    .receipt-label { color: var(--muted); }
+    .receipt-value { max-width: 65%; overflow-wrap: anywhere; color: #1b3853; font-weight: 750; text-align: right; }
+    .receipt-value.success-value { color: var(--success); }
+    .state-actions { padding: 18px 0 0; }
+    .auto-check { margin: 14px 0 0; color: #7190a8; font-size: 10px; }
+    .status-dot { display: inline-block; width: 7px; height: 7px; margin-right: 4px; border-radius: 50%; background: #e0a123; animation: pulse 1.3s ease infinite; }
+    @keyframes pulse { 50% { opacity: .35; transform: scale(.75); } }
+    .bottom-space { height: 10px; }
+    .details-sheet { position: fixed; right: 0; bottom: 0; left: 0; z-index: 50; display: none; max-width: 480px; margin: auto; padding: 19px 17px calc(18px + env(safe-area-inset-bottom)); border: 1px solid var(--line); border-radius: 22px 22px 0 0; background: #fff; box-shadow: 0 -12px 30px rgba(20, 75, 120, .16); }
+    .details-sheet.open { display: block; animation: sheet .2s ease; }
+    @keyframes sheet { from { transform: translateY(18px); opacity: 0; } }
+    .sheet-title { margin: 0; font-size: 16px; }
+    .sheet-copy { margin: 7px 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .sheet-close { width: 100%; min-height: 42px; border: 1px solid #b9dbef; border-radius: 12px; color: var(--blue-dark); background: #f5fbff; font-size: 13px; font-weight: 800; }
+    @media (min-width: 600px) { body { padding: 24px 0; background: linear-gradient(135deg, #eaf7ff, #f6fbff); } .app { min-height: calc(100vh - 48px); border: 1px solid #d9e9f4; border-radius: 26px; overflow: hidden; box-shadow: 0 20px 55px rgba(38, 86, 128, .13); } .sticky-pay { bottom: 24px; border-radius: 22px; } }
+    @media (max-width: 350px) { .content { padding-right: 12px; padding-left: 12px; } .method { min-height: 106px; } .merchant-actions { display: none; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body data-sid="{{ session_id }}" data-provider="{{ provider or '' }}">
+  <main class="app">
+    <header class="topbar">
+      <div class="brand" aria-label="UniquePay BD">
+        <div class="brand-mark">৳</div>
+        <div><div class="brand-name">UniquePay BD</div><div class="brand-subtitle">Secure payment</div></div>
+      </div>
+      <button id="closeButton" class="icon-button" type="button" aria-label="Close payment">×</button>
+    </header>
 
-function showTerminal(title, msg) {
-  stopPolling(); stopCountdown();
-  el('mainCard').classList.add('hidden'); el('timerChip').classList.add('hidden');
-  el('terminalTitle').textContent = title; el('terminalMsg').textContent = msg || '';
-  el('expiredCard').classList.remove('hidden');
-}
+    <section id="loadingView" class="content" aria-live="polite">
+      <div class="card state-view"><div class="state-icon loading"></div><h1 class="state-title">Loading payment</h1><p class="state-text">Please wait while we prepare your secure checkout.</p></div>
+    </section>
 
-function startCountdown(expiresAt) {
-  countdownTimer = setInterval(() => {
-    const ms = expiresAt - Date.now();
-    if (ms <= 0) { showTerminal('Session Expired', 'This payment window has closed. Please restart checkout from the merchant site.'); return; }
-    const m = Math.floor(ms / 60000), s = Math.floor((ms % 60000) / 1000);
-    el('countdown').textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
-    if (ms < 120000) el('timerChip').classList.add('text-rose-300');
-  }, 500);
-}
-function stopCountdown(){ if (countdownTimer) clearInterval(countdownTimer); }
+    <section id="methodView" class="hidden">
+      <div class="content">
+        <article class="merchant-card">
+          <div class="merchant-art" aria-hidden="true">U</div>
+          <div class="merchant-copy"><p id="merchantName" class="merchant-label">UniquePay BD</p><p id="orderCaption" class="merchant-meta">Secure payment request</p></div>
+          <div class="merchant-actions"><button class="small-button" type="button" data-sheet="support">Support</button><button class="small-button" type="button" data-sheet="details">Details</button></div>
+        </article>
+        <h1 class="section-heading">Payment Method</h1>
+        <div class="pay-pill"><span>✓</span><span lang="bn">পেমেন্ট করুন</span></div>
+        <div id="providerGrid" class="method-grid" aria-label="Payment methods"></div>
+        <p class="micro-copy">Select your preferred mobile wallet to continue with your payment.</p>
+        <div class="secure-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1a5 5 0 0 0-5 5v3H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V11a2 2 0 0 0-2-2h-2V6a5 5 0 0 0-5-5Zm-3 8V6a3 3 0 1 1 6 0v3H9Z"/></svg> Your payment details are securely verified</div>
+      </div>
+      <div class="sticky-pay"><button id="stickyButton" type="button" disabled>Pay ৳<span id="stickyAmount">0.00</span></button></div>
+    </section>
 
-init();
-</script>
-{% endraw %}
+    <section id="providerView" class="hidden">
+      <div class="content">
+        <div class="back-row"><button id="backButton" class="back-button" type="button" aria-label="Back to payment methods">‹</button><span>Payment methods</span></div>
+        <article class="card provider-header">
+          <div id="providerBrand" class="provider-logo">Wallet</div>
+          <h1 id="providerTitle" class="provider-title">Wallet Payment</h1>
+          <p id="providerIntro" class="provider-intro">Complete your payment and enter the transaction ID below.</p>
+          <div class="amount-card"><span>Payment amount</span><strong>৳<span id="providerAmount">0.00</span></strong></div>
+        </article>
+        <article class="card checkout-card">
+          <h2 class="subheading"><span class="subheading-index">1</span>How to Pay</h2>
+          <ol id="instructionList" class="instructions"></ol>
+          <div class="wallet-box"><div><span id="walletCaption" class="wallet-caption">Send money to</span><strong id="walletNumber" class="wallet-number">—</strong></div><button id="copyButton" class="copy-button" type="button">Copy</button></div>
+        </article>
+        <article class="card checkout-card">
+          <h2 class="subheading"><span class="subheading-index">2</span>Confirm payment</h2>
+          <label class="form-label" for="walletInput">Your <span id="walletProviderName">wallet</span> number</label>
+          <input id="walletInput" class="field" inputmode="numeric" autocomplete="tel" maxlength="11" placeholder="01XXXXXXXXX">
+          <label class="form-label" for="trxidInput">Transaction ID</label>
+          <input id="trxidInput" class="field" autocomplete="off" autocapitalize="characters" maxlength="24" placeholder="Enter your transaction ID">
+          <p class="field-hint">You can find the transaction ID in the confirmation SMS from your payment provider.</p>
+          <p id="formError" class="error-message" role="alert"></p>
+          <button id="confirmButton" class="confirm-button" type="button">Confirm Payment</button>
+        </article>
+        <p class="checkout-footer">Only submit after completing your payment. Please do not refresh during verification.</p>
+        <div class="bottom-space"></div>
+      </div>
+    </section>
+
+    <section id="processingView" class="hidden content" aria-live="polite">
+      <article class="card state-view"><div class="state-icon loading"></div><h1 class="state-title">Processing Payment</h1><p class="state-text">Please wait while we verify your payment. Do not close this page or submit again.</p></article>
+    </section>
+
+    <section id="successView" class="hidden content" aria-live="polite">
+      <article class="card state-view"><div class="state-icon success">✓</div><h1 class="state-title">Payment Successful</h1><p class="state-text">Your payment has been verified successfully.</p><div id="successReceipt" class="receipt"></div><div class="state-actions"><button id="doneButton" class="primary-button" type="button">Done / Return to Merchant</button></div></article>
+    </section>
+
+    <section id="failedView" class="hidden content" aria-live="polite">
+      <article class="card state-view"><div class="state-icon failed">!</div><h1 class="state-title">Payment Failed</h1><p id="failedMessage" class="state-text">We could not verify this payment.</p><div id="failedReceipt" class="receipt"></div><div class="state-actions"><button id="tryAgainButton" class="primary-button" type="button">Try Again</button><button id="changeMethodButton" class="secondary-button" type="button">Choose another method</button></div></article>
+    </section>
+
+    <section id="pendingView" class="hidden content" aria-live="polite">
+      <article class="card state-view"><div class="state-icon pending">…</div><h1 class="state-title">Payment Verification Pending</h1><p id="pendingMessage" class="state-text">We have not received your payment confirmation yet.</p><div id="pendingReceipt" class="receipt"></div><p class="auto-check"><span class="status-dot"></span>Checking status automatically</p><div class="state-actions"><button id="checkStatusButton" class="primary-button" type="button">Check Status</button><button id="pendingMethodButton" class="secondary-button" type="button">Back to payment methods</button></div></article>
+    </section>
+
+    <section id="terminalView" class="hidden content" aria-live="polite">
+      <article class="card state-view"><div class="state-icon failed">!</div><h1 id="terminalTitle" class="state-title">Payment unavailable</h1><p id="terminalMessage" class="state-text"></p><div class="state-actions"><button id="terminalBackButton" class="primary-button" type="button">Back to payment methods</button></div></article>
+    </section>
+  </main>
+
+  <aside id="detailsSheet" class="details-sheet" aria-live="polite">
+    <h2 id="sheetTitle" class="sheet-title">Payment details</h2><p id="sheetCopy" class="sheet-copy"></p><button id="sheetClose" class="sheet-close" type="button">Close</button>
+  </aside>
+
+  <script>
+  (() => {
+    'use strict';
+    const SID = document.body.dataset.sid;
+    const providerInPath = document.body.dataset.provider;
+    const ROOT_PATH = '/checkout/' + encodeURIComponent(SID);
+    const API = '/api/v1/checkout/' + encodeURIComponent(SID);
+    const PROVIDER_ORDER = ['bkash', 'nagad', 'upay', 'rocket'];
+    const PROVIDERS = {
+      bkash: {label: 'bKash', className: 'bkash', walletAction: 'Send Money', instructions: ['Open the bKash app or dial *247#.', 'Choose “Send Money” and enter the number below.', 'Enter the exact amount shown above and use the order number as reference.', 'Complete the payment, enter the TrxID below, then confirm.']},
+      nagad: {label: 'Nagad', className: 'nagad', walletAction: 'Send Money', instructions: ['Open the Nagad app or dial *167#.', 'Choose “Send Money” and enter the number below.', 'Enter the exact amount shown above and use the order number as reference.', 'Complete the payment, enter the TxnID below, then confirm.']},
+      upay: {label: 'Upay', className: 'upay', walletAction: 'Send Money', instructions: ['Open the Upay app or dial *268#.', 'Choose “Send Money” and enter the number below.', 'Enter the exact amount shown above and use the order number as reference.', 'Complete the payment, enter the TrxID below, then confirm.']},
+      rocket: {label: 'Rocket', className: 'rocket', walletAction: 'Cash In', instructions: ['Open the Rocket app or dial *322#.', 'Choose “Cash In” and enter the number below.', 'Enter the exact amount shown above and use the order number as reference.', 'Complete the payment, enter the TxnID below, then confirm.']}
+    };
+    const views = ['loadingView', 'methodView', 'providerView', 'processingView', 'successView', 'failedView', 'pendingView', 'terminalView'];
+    const $ = (id) => document.getElementById(id);
+    let state = null;
+    let selectedProvider = null;
+    let verification = null;
+    let statusTimer = null;
+    let submitting = false;
+
+    function text(id, value) { $(id).textContent = value == null ? '' : String(value); }
+    function escapeHtml(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[char])); }
+    function show(viewId) { views.forEach((id) => $(id).classList.toggle('hidden', id !== viewId)); window.scrollTo({top: 0, behavior: 'smooth'}); }
+    function stopStatusCheck() { if (statusTimer) { window.clearInterval(statusTimer); statusTimer = null; } }
+    function providerMeta(key) { return PROVIDERS[key] || null; }
+    function currentMethod(key) { return state && state.methods ? state.methods[key] : null; }
+    function displayDate(value) { if (!value) return new Intl.DateTimeFormat('en-BD', {dateStyle: 'medium', timeStyle: 'short'}).format(new Date()); const date = new Date(value); return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('en-BD', {dateStyle: 'medium', timeStyle: 'short'}).format(date); }
+    function receiptRow(label, value, success) { return '<div class="receipt-row"><span class="receipt-label">' + escapeHtml(label) + '</span><span class="receipt-value' + (success ? ' success-value' : '') + '">' + escapeHtml(value || '—') + '</span></div>'; }
+
+    async function fetchState() {
+      const response = await fetch(API, {headers: {'Accept': 'application/json'}, cache: 'no-store'});
+      if (!response.ok) throw new Error('This payment link is invalid or unavailable.');
+      return response.json();
+    }
+
+    function setLogo(id, key) {
+      const meta = providerMeta(key);
+      const node = $(id);
+      node.className = 'provider-logo ' + (meta ? meta.className : '');
+      node.textContent = meta ? meta.label : 'Wallet';
+    }
+
+    function renderMethods() {
+      const grid = $('providerGrid');
+      grid.innerHTML = '';
+      PROVIDER_ORDER.forEach((key) => {
+        const meta = providerMeta(key);
+        const method = currentMethod(key);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'method' + (method ? '' : ' method-unavailable');
+        button.disabled = !method;
+        button.setAttribute('aria-label', method ? 'Pay with ' + meta.label : meta.label + ' is unavailable');
+        button.innerHTML = '<span class="provider-logo ' + meta.className + '">' + meta.label + '</span><span class="method-name">' + meta.label + (method ? '' : ' · unavailable') + '</span>';
+        if (method) button.addEventListener('click', () => selectMethod(key, button));
+        grid.appendChild(button);
+      });
+    }
+
+    function selectMethod(key, button) {
+      if (!currentMethod(key)) return;
+      selectedProvider = key;
+      document.querySelectorAll('.method').forEach((node) => node.classList.remove('is-selected'));
+      button.classList.add('is-selected');
+      $('stickyButton').disabled = false;
+      $('stickyButton').setAttribute('aria-label', 'Pay ৳' + state.amount_bdt + ' with ' + providerMeta(key).label);
+      window.setTimeout(() => goToProvider(key), 240);
+    }
+
+    function goToProvider(key) {
+      if (!currentMethod(key)) return;
+      // Provider checkouts have a shareable, direct URL. This intentionally
+      // performs a real navigation rather than only swapping a local panel.
+      window.location.assign(ROOT_PATH + '/' + encodeURIComponent(key));
+    }
+
+    function renderProvider() {
+      const meta = providerMeta(selectedProvider);
+      const method = currentMethod(selectedProvider);
+      if (!meta || !method) { showTerminal('Payment method unavailable', 'This payment method is currently unavailable. Please choose another method.'); return; }
+      setLogo('providerBrand', selectedProvider);
+      text('providerTitle', meta.label + ' Payment');
+      text('providerIntro', 'Pay securely with ' + meta.label + ' and confirm using your transaction ID.');
+      text('providerAmount', state.amount_bdt);
+      text('walletProviderName', meta.label);
+      text('walletCaption', meta.walletAction + ' to ' + (method.type || 'Personal') + ' number');
+      text('walletNumber', method.number || 'Contact support');
+      $('instructionList').innerHTML = meta.instructions.map((instruction) => '<li>' + escapeHtml(instruction).replace('order number', '<strong>order number ' + escapeHtml(state.order_id) + '</strong>') + '</li>').join('');
+      $('formError').classList.remove('show');
+    }
+
+    function renderMethodScreen() {
+      stopStatusCheck();
+      selectedProvider = null;
+      text('merchantName', state.gateway_name || 'UniquePay BD');
+      text('orderCaption', (state.merchant_name ? 'For ' + state.merchant_name + ' · ' : '') + 'Order ' + state.order_id + ' · ৳' + state.amount_bdt);
+      text('stickyAmount', state.amount_bdt);
+      $('stickyButton').disabled = true;
+      renderMethods();
+      window.history.replaceState({provider: null}, '', ROOT_PATH);
+      show('methodView');
+    }
+
+    function goBack() { renderMethodScreen(); }
+    function showTerminal(title, message) { stopStatusCheck(); text('terminalTitle', title); text('terminalMessage', message); show('terminalView'); }
+
+    function openSheet(kind) {
+      const title = kind === 'support' ? 'Support' : 'Payment details';
+      const copy = kind === 'support'
+        ? 'Need help with this payment? Please keep your order number ready and contact the merchant support team. Do not share your PIN, OTP, or account password with anyone.'
+        : 'Order ' + state.order_id + ' · Amount ৳' + state.amount_bdt + ' · This payment link expires at ' + displayDate(state.expires_at) + '.';
+      text('sheetTitle', title); text('sheetCopy', copy); $('detailsSheet').classList.add('open');
+    }
+
+    async function copyWallet() {
+      const value = $('walletNumber').textContent.trim();
+      try { await navigator.clipboard.writeText(value); text('copyButton', 'Copied'); window.setTimeout(() => text('copyButton', 'Copy'), 1500); } catch (_) { text('copyButton', 'Select text'); }
+    }
+
+    function validateForm() {
+      const wallet = $('walletInput').value.trim();
+      const trxid = $('trxidInput').value.trim().toUpperCase();
+      if (!/^01\d{9}$/.test(wallet)) return {error: 'Enter a valid 11-digit wallet number (01XXXXXXXXX).'};
+      if (!/^[A-Z0-9-]{6,24}$/.test(trxid)) return {error: 'Enter a valid transaction ID with 6–24 letters or numbers.'};
+      return {wallet, trxid};
+    }
+
+    async function submitVerification() {
+      if (submitting || !selectedProvider) return;
+      const data = validateForm();
+      if (data.error) { text('formError', data.error); $('formError').classList.add('show'); return; }
+      $('formError').classList.remove('show');
+      verification = data;
+      submitting = true;
+      $('confirmButton').disabled = true;
+      show('processingView');
+      try {
+        const response = await fetch('/api/v1/checkout/verify', {method: 'POST', headers: {'Content-Type': 'application/json', 'Accept': 'application/json'}, body: JSON.stringify({session_id: SID, provider: selectedProvider, wallet: data.wallet, trxid: data.trxid})});
+        const result = await response.json();
+        handleVerification(result);
+      } catch (_) {
+        showFailure('Network error', 'We could not reach the payment gateway. Please check your connection and try again.');
+      } finally {
+        submitting = false;
+        $('confirmButton').disabled = false;
+      }
+    }
+
+    function handleVerification(result) {
+      if (result.result === 'paid') { showSuccess(result); return; }
+      if (result.result === 'pending') { showPending(result.message); return; }
+      if (result.result === 'expired') { showTerminal('Payment window expired', result.message || 'This payment link has expired. Please start a new payment from the merchant.'); return; }
+      showFailure('Payment Failed', result.message || 'We could not verify this payment. Please check the details and try again.');
+    }
+
+    function showSuccess(result) {
+      stopStatusCheck();
+      const provider = providerMeta(result.provider || selectedProvider);
+      $('successReceipt').innerHTML = receiptRow('Paid amount', '৳' + state.amount_bdt, true)
+        + receiptRow('Payment method', provider ? provider.label : (result.provider || 'Mobile wallet'))
+        + receiptRow('Transaction ID', result.trxid || (verification && verification.trxid))
+        + receiptRow('Order reference', state.order_id)
+        + receiptRow('Date & time', displayDate(new Date().toISOString()));
+      $('doneButton').onclick = () => finish(result.redirect);
+      show('successView');
+    }
+
+    function showFailure(title, message) {
+      stopStatusCheck();
+      text('failedMessage', message);
+      $('failedReceipt').innerHTML = receiptRow('Payment method', providerMeta(selectedProvider)?.label || '—') + receiptRow('Transaction ID', verification && verification.trxid) + receiptRow('Order reference', state.order_id);
+      show('failedView');
+    }
+
+    function showPending(message) {
+      text('pendingMessage', message || 'Your payment is being verified. This can take a few moments after you complete the payment.');
+      $('pendingReceipt').innerHTML = receiptRow('Current status', 'Verification pending') + receiptRow('Transaction ID', verification && verification.trxid) + receiptRow('Order reference', state.order_id);
+      show('pendingView');
+      startStatusCheck();
+    }
+
+    async function checkStatus(verifyAgain) {
+      if (verifyAgain && verification) { submitVerification(); return; }
+      try {
+        const response = await fetch(API + '/status', {headers: {'Accept': 'application/json'}, cache: 'no-store'});
+        const result = await response.json();
+        if (result.status === 'paid') showSuccess({result: 'paid', provider: result.provider, trxid: result.trxid, redirect: result.redirect});
+        else if (result.status === 'expired' || result.status === 'cancelled') showTerminal('Payment window expired', 'This payment link is no longer active. Please return to the merchant and try again.');
+      } catch (_) { /* next automatic check will retry */ }
+    }
+
+    function startStatusCheck() { stopStatusCheck(); statusTimer = window.setInterval(() => checkStatus(false), 5000); }
+    function finish(redirectUrl) { if (redirectUrl) { window.location.assign(redirectUrl); return; } window.location.assign('/'); }
+    function closeCheckout() { if (window.history.length > 1) { window.history.back(); } else { window.location.assign('/'); } }
+
+    async function initialise() {
+      try {
+        state = await fetchState();
+        if (state.status === 'paid') { selectedProvider = state.provider || providerInPath; showSuccess({provider: state.provider, trxid: state.trxid}); return; }
+        if (state.status === 'expired' || state.status === 'cancelled') { showTerminal('Payment window expired', 'This payment link is no longer active. Please return to the merchant and try again.'); return; }
+        if (providerInPath && providerMeta(providerInPath) && currentMethod(providerInPath)) { selectedProvider = providerInPath; renderProvider(); show('providerView'); }
+        else { renderMethodScreen(); }
+      } catch (error) { showTerminal('Payment link unavailable', error.message || 'Unable to load this payment request.'); }
+    }
+
+    $('closeButton').addEventListener('click', closeCheckout);
+    $('backButton').addEventListener('click', goBack);
+    $('stickyButton').addEventListener('click', () => { if (selectedProvider) goToProvider(selectedProvider); });
+    $('copyButton').addEventListener('click', copyWallet);
+    $('confirmButton').addEventListener('click', submitVerification);
+    $('tryAgainButton').addEventListener('click', () => { renderProvider(); show('providerView'); });
+    $('changeMethodButton').addEventListener('click', goBack);
+    $('pendingMethodButton').addEventListener('click', goBack);
+    $('checkStatusButton').addEventListener('click', () => checkStatus(true));
+    $('terminalBackButton').addEventListener('click', goBack);
+    $('sheetClose').addEventListener('click', () => $('detailsSheet').classList.remove('open'));
+    document.querySelectorAll('[data-sheet]').forEach((button) => button.addEventListener('click', () => openSheet(button.dataset.sheet)));
+    window.addEventListener('popstate', () => { if (state) { selectedProvider = null; renderMethodScreen(); } });
+    initialise();
+  })();
+  </script>
 </body>
 </html>
