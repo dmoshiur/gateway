@@ -1,11 +1,14 @@
-"""Shared API/security flow suite — runs against the MongoDB store.
+"""Shared API/security flow suite — runs against the PostgreSQL store.
 
 Behavioural contract pinned by these tests: webhook HMAC, idempotency,
 replay protection, double-spend blocking, amount matching, CSRF/auth walls
 and the full payment cycle.
 
-No real mongod is needed in CI: the app boots with GATEWAY_MONGO_MOCK=1
-(in-memory mongomock transport, same production MongoStore code path).
+No PostgreSQL server is needed in CI: the app boots with
+``DATABASE_URL=sqlite://``, which runs the exact same SQLAlchemy store code
+path (``PostgresStore``) on an in-memory SQLite database. Set
+``GATEWAY_TEST_DATABASE_URL`` to a PostgreSQL URL to run the suite against a
+real PostgreSQL server.
 """
 
 import hashlib
@@ -16,7 +19,6 @@ import sys
 import tempfile
 import time
 import unittest
-import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -27,15 +29,16 @@ def sign(secret: str, kid: str, ts: str, body: str) -> str:
 
 
 def build_app() -> tuple:
-    """Create an isolated app instance with an isolated mock-Mongo database."""
-    tmp = tempfile.mkdtemp(prefix="gateway-test-mongo-")
+    """Create an isolated app instance with an isolated in-memory database.
+
+    Default transport is in-memory SQLite (no PostgreSQL server needed);
+    ``GATEWAY_TEST_DATABASE_URL`` overrides it (e.g. a PostgreSQL URL).
+    """
+    tmp = tempfile.mkdtemp(prefix="gateway-test-pg-")
     os.environ["GATEWAY_DATA_DIR"] = tmp
     os.environ.setdefault("GATEWAY_ADMIN_PASSWORD", "test-admin-pass")
-    os.environ["MONGO_URI"] = ("mongodb://mocked-local/gateway_test_"
-                               + uuid.uuid4().hex[:10])
-    from backend.store import mongo_store
-    import mongomock
-    mongo_store.MONGO_CLIENT_FACTORY = mongomock.MongoClient
+    os.environ["DATABASE_URL"] = (os.environ.get("GATEWAY_TEST_DATABASE_URL")
+                                  or "sqlite://")
 
     from backend.app import create_app
     app = create_app()

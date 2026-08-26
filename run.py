@@ -11,8 +11,9 @@ Flags:
 
 Env (see .env.example for full docs):
   PORT                  default 8000
-  MONGO_URI             single-line MongoDB connection string, db name in path
-                        (default mongodb://localhost:27017/mfs_gateway)
+  DATABASE_URL          single-line PostgreSQL connection URL
+                        (default postgresql+psycopg://localhost:5432/mfs_gateway;
+                        DATABASE_URL=sqlite:// = dev/test in-memory shim)
   GATEWAY_SECRET        Flask/session + signing secret
   GATEWAY_ADMIN_USER    superadmin username (re-synced every boot)
   GATEWAY_ADMIN_PASSWORD superadmin password (re-synced every boot)

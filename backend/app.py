@@ -1,7 +1,8 @@
 """
 Automated MFS Payment Gateway — central backend.
 
-Flask + MongoDB (pymongo store layer). Single-line DB config: MONGO_URI.
+Flask + PostgreSQL (SQLAlchemy Core + psycopg 3 store layer).
+Single-line DB config: DATABASE_URL.
 Money is integer paisa everywhere; timestamps are UTC ISO-8601.
 
 Public / device API
@@ -120,8 +121,8 @@ def create_app() -> Flask:
 
     app.permanent_session_lifetime = timedelta(hours=12)
 
-    # MongoDB store. Handles indexes, default settings and deterministic
-    # superadmin on init. Single-line config: MONGO_URI.
+    # PostgreSQL store. Handles schema creation, default settings and
+    # deterministic superadmin on init. Single-line config: DATABASE_URL.
     app.store = make_store(app)
     app.store.init(app)
 
@@ -989,12 +990,13 @@ def create_app() -> Flask:
 
     @app.get("/healthz")
     def healthz():
+        dialect = getattr(app.store, "dialect_name", "postgresql")
         return jsonify({
             "status": "ok", "time": utcnow_iso(),
-            "backend": "mongodb",
-            "mongo_db": getattr(app.store, "db_name", "mfs_gateway"),
-            "mongo_transport": ("mock (dev shim)" if getattr(app.store, "mocked", False)
-                                else "real server"),
+            "backend": "postgresql" if dialect == "postgresql" else "sqlite",
+            "database": getattr(app.store, "database_name", "mfs_gateway"),
+            "transport": ("postgresql server" if dialect == "postgresql"
+                          else "in-memory sqlite (dev/test shim)"),
         })
 
     @app.errorhandler(404)

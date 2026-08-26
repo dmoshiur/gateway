@@ -12,7 +12,7 @@ no aggregator contracts, no per-transaction middleman fees.
                                                         │ HMAC-signed POST
                                                         ▼
 ┌──────────────────┐   checkout_url   ┌───────────────────────────────┐
-│  Merchant Shop   │ ◀─────────────── │ Central Gateway (Flask+MongoDB) │
+│  Merchant Shop   │ ◀─────────────── │ Central Gateway (Flask+PostgreSQL) │
 │  (your app)      │                  │  • SMS ledger + TrxID matcher  │
 └──────┬───────────┘                  │  • Admin + Merchant consoles   │
        │ buyer pays, submits TrxID    │  • IPN webhooks                │
@@ -50,8 +50,9 @@ python tools/demo_flow.py
 | Landing page       | `/`                        | —                                           |
 | Demo credentials   | `data/demo_credentials.json` | merchant API key pair + Termux device secret |
 
-Run the test suites (parser + full API/security flows on the MongoDB store,
-using the in-memory transport — no mongod needed in CI):
+Run the test suites (parser + full API/security flows on the PostgreSQL store,
+using the in-memory SQLite transport — same SQLAlchemy code path, no
+PostgreSQL server needed in CI):
 
 ```bash
 cd tests && python -m unittest discover -s . -p "test_*.py"
@@ -86,36 +87,44 @@ receives MFS balance-update SMS:
 | Module                | Responsibility |
 |-----------------------|----------------|
 | `app.py`              | All HTTP routes, auth decorators, rate limiting, IPN dispatch |
-| `store/`              | **MongoDB persistence layer** — `MongoStore` (pymongo), configured by one single-line `MONGO_URI`; unique-index guaranteed replay/double-spend protection |
+| `store/`              | **PostgreSQL persistence layer** — `PostgresStore` (SQLAlchemy Core + psycopg 3), configured by one single-line `DATABASE_URL`; unique constraints + atomic conditional UPDATEs give replay/double-spend protection |
 | `sms_parser.py`       | Regex engine (mirrored in the listener) |
 | `security.py`         | HMAC signing/verify, PBKDF2 passwords, key generation |
 | `demo.py`             | Deterministic demo seeding |
 
-**Database = MongoDB only.** One single-line connection string is the whole
-database config — the database name lives in the URI path:
+**Database = PostgreSQL only.** One single-line SQLAlchemy URL is the whole
+database config — the database name lives in the URL path. Plain
+`postgresql://` / `postgres://` URLs are auto-upgraded to the psycopg 3
+driver:
 
 ```bash
 # .env (or shell env) — pick ONE line:
-MONGO_URI=mongodb://localhost:27017/mfs_gateway
-MONGO_URI=mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/mfs_gateway   # Atlas
+DATABASE_URL=postgresql+psycopg://gateway:secret@localhost:5432/mfs_gateway
+DATABASE_URL=postgresql+psycopg://user:pass@db.example.com:5432/mfs_gateway   # managed
 
-python run.py --init-demo     # no other flags needed
+createdb mfs_gateway          # local: create the database once
+python run.py --init-demo     # tables/settings/admin are created at boot
 ```
 
-Atlas (free M0 tier): cloud.mongodb.com → Create cluster → Database user +
-network access → copy the `mongodb+srv://` string into `MONGO_URI`. Local:
-`mongod --dbpath /var/lib/mongo &`.
+Local server: `sudo apt install postgresql` → `sudo -u postgres createdb mfs_gateway`
+(or a managed provider — Neon, Supabase, RDS, etc.). The schema is created
+idempotently at boot via SQLAlchemy `create_all` (tables/indexes/constraints
+only when missing).
 
-The store uses unique indexes (`trxid_norm`, `merchants.email`,
-`api_keys.key_id`, compound `merchant_id+order_id`) and atomic
-`findOneAndUpdate` claims for replay/double-spend protection. `GET /healthz`
-reports the backend, database and transport (`real server` — or the
-`GATEWAY_MONGO_MOCK=1` in-memory dev shim for CI/restricted sandboxes).
+The store uses unique constraints (`trxid_norm`, `merchants.email`,
+`api_keys.key_id`, compound `merchant_id+order_id`) and atomic conditional
+UPDATEs for replay/double-spend protection. `GET /healthz` reports the
+backend, database and transport (`postgresql server` — or the
+`DATABASE_URL=sqlite://` in-memory dev shim for CI/restricted sandboxes,
+which runs the same SQLAlchemy code path).
 
-> Scaling notes: replica sets give durability/read scaling out of the box;
-> the SMS ledger shards cleanly on `trxid_norm` if you ever outgrow one
-> cluster. The entire store is covered by the 60+ test flow suite (`tests/`,
-> running on the in-memory transport by default).
+> Scaling notes: managed PostgreSQL gives point-in-time recovery and read
+> replicas out of the box; PgBouncer/connection pooling sits in front of the
+> pool SQLAlchemy already opens. The SMS ledger rows are unique on
+> `trxid_norm` and shard cleanly if you ever outgrow one instance. The entire
+> store is covered by the flow test suite (`tests/`, running on the in-memory
+> SQLite transport by default or a real PostgreSQL via
+> `GATEWAY_TEST_DATABASE_URL`).
 
 **Payment ledger model** — webhook facts and checkout sessions are separate
 tables joined at verification time:
@@ -285,10 +294,10 @@ Duplicates return `{"status":"duplicate"}` safely.
 > **Production notes.** API/device secrets are stored server-side (like Stripe
 > live secrets) so HMAC can be verified; `data/` is `0600`-permissioned and
 > git-ignored. For real deployments: put secrets behind KMS/Vault, run behind
-> gunicorn + TLS (Caddy/Nginx), enforce HTTPS, use a replica-set MongoDB
-> URI, and rotate keys via the admin panel. Prefer **Personal** wallets with
-> unique per-order reference codes if you expect same-amount collisions
-> within minutes.
+> gunicorn + TLS (Caddy/Nginx), enforce HTTPS, use a managed PostgreSQL with
+> automated backups + replication, and rotate keys via the admin panel.
+> Prefer **Personal** wallets with unique per-order reference codes if you
+> expect same-amount collisions within minutes.
 
 ---
 
@@ -300,8 +309,8 @@ Duplicates return `{"status":"duplicate"}` safely.
 ├── backend/
 │   ├── app.py                 # routes: webhook, checkout, panels
 │   ├── store/
-│   │   ├── __init__.py        # store contract + MongoDB factory (single-line MONGO_URI)
-│   │   ├── mongo_store.py     # MongoDB backend (pymongo)
+│   │   ├── __init__.py        # store contract + PostgreSQL factory (single-line DATABASE_URL)
+│   │   ├── postgres_store.py  # PostgreSQL backend (SQLAlchemy Core + psycopg 3)
 │   │   └── seeding.py         # deterministic superadmin seeding
 │   ├── demo.py                # deterministic demo seeding
 │   ├── security.py            # HMAC / PBKDF2 / keygen
@@ -313,8 +322,8 @@ Duplicates return `{"status":"duplicate"}` safely.
 ├── tests/
 │   ├── test_sms_parser.py     # regex unit tests
 │   ├── flow_base.py           # shared API/security flow suite
-│   ├── test_api_flows.py      # API/security flows (MongoDB store)
-│   └── test_mongo_store.py    # store-level contracts (indexes, claims, URI parsing)
+│   ├── test_api_flows.py      # API/security flows (PostgreSQL store)
+│   └── test_postgres_store.py # store-level contracts (constraints, claims, URL parsing)
 └── tools/demo_flow.py         # E2E simulation + merchant SDK reference
 ```
 
@@ -327,8 +336,7 @@ it's git-ignored); variables already set in the shell always win over `.env`.
 | Env var                  | Default                | Purpose |
 |--------------------------|------------------------|---------|
 | `PORT`                   | `8000`                 | HTTP port |
-| `MONGO_URI`              | `mongodb://localhost:27017/mfs_gateway` | **The only DB config** — single-line MongoDB string; db name in URI path |
-| `GATEWAY_MONGO_MOCK`     | —                      | `1` = in-memory transport (CI/sandbox shim only) |
+| `DATABASE_URL`          | `postgresql+psycopg://localhost:5432/mfs_gateway` | **The only DB config** — single-line SQLAlchemy URL; db name in URL path. Plain `postgresql://`/`postgres://` auto-upgraded. `sqlite://` = in-memory dev/test shim (never production) |
 | `GATEWAY_SECRET`         | generated → `data/secret_key` | session + redirect/IPN signing key |
 | `GATEWAY_ADMIN_USER`     | `admin`                | superadmin username (created/synced at boot) |
 | `GATEWAY_ADMIN_PASSWORD` | random (printed once)  | superadmin password — **re-synced every boot** |
